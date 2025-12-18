@@ -465,7 +465,7 @@ void OnTick()
    if(!CheckTradingConditions())
       return;
    
-   AnalyzeAndTrade(rsi[0], emaFast[0], emaSlow[0], atr[0], adxMain[0], (double)volume[0]);
+   AnalyzeAndTrade(rsi, emaFast[0], emaSlow[0], atr[0], adxMain[0], (double)volume[0]);
 }
 
 //+------------------------------------------------------------------+
@@ -622,7 +622,7 @@ int CountOpenPositions()
 }
 
 //+------------------------------------------------------------------+
-void AnalyzeAndTrade(double rsi, double emaFast, double emaSlow, 
+void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow, 
                      double atr, double adx, double currentVolume)
 {
    // Calculate average volume
@@ -709,7 +709,7 @@ void AnalyzeAndTrade(double rsi, double emaFast, double emaSlow,
       "Balance: $", DoubleToString(balance, 2), " | Pos: $", DoubleToString(positionValue, 2), "\n",
       "Session: ", sessionInfo, " | UTC: ", TimeToString(TimeGMT(), TIME_MINUTES), "\n",
       "Market: ", marketStateStr, " | ADX: ", DoubleToString(adx, 1), "\n",
-      "RSI: ", DoubleToString(rsi, 1), " | Vol: ", volumeStatus, " | ATR: ", atrStatus, "\n",
+      "RSI: ", DoubleToString(rsi[0], 1), " | Vol: ", volumeStatus, " | ATR: ", atrStatus, "\n",
       "Positions: ", CountOpenPositions(), "/", GetMaxPositions(), "\n",
       "Mean Reversion: BUY=", (InpAllowTrendingBuy ? "YES" : "NO"), " SELL=", (InpAllowTrendingSell ? "YES" : "NO"), "\n",
       "Momentum: ", (InpAllowMomentumTrade ? "YES" : "NO"), " | Sideway: ", (InpAllowSidewayTrade ? "YES" : "NO")
@@ -733,15 +733,15 @@ void AnalyzeAndTrade(double rsi, double emaFast, double emaSlow,
    // TRENDING SIGNALS
    if(marketState == MARKET_UPTREND && InpAllowTrendingBuy)
    {
-      if(rsi < InpRSIOversold)
+      if(rsi[0] < InpRSIOversold)
       {
          // RSI Confirmation: Check if RSI is turning up
-         bool rsiConfirmed = !InpUseRSIConfirmation || (rsi > rsi[1] && rsi[1] <= rsi[2]);
+         bool rsiConfirmed = !InpUseRSIConfirmation || (rsi[0] > rsi[1] && rsi[1] <= rsi[2]);
          
          if(!rsiConfirmed)
          {
             if(InpEnableDetailedLogs)
-               Print("WAITING: BUY signal but RSI not confirmed (RSI=", DoubleToString(rsi, 1), 
+               Print("WAITING: BUY signal but RSI not confirmed (RSI=", DoubleToString(rsi[0], 1), 
                      " prev=", DoubleToString(rsi[1], 1), ")");
             return;
          }
@@ -762,15 +762,15 @@ void AnalyzeAndTrade(double rsi, double emaFast, double emaSlow,
    
    if(marketState == MARKET_DOWNTREND && InpAllowTrendingSell)
    {
-      if(rsi > InpRSIOverbought)
+      if(rsi[0] > InpRSIOverbought)
       {
          // RSI Confirmation: Check if RSI is turning down
-         bool rsiConfirmed = !InpUseRSIConfirmation || (rsi < rsi[1] && rsi[1] >= rsi[2]);
+         bool rsiConfirmed = !InpUseRSIConfirmation || (rsi[0] < rsi[1] && rsi[1] >= rsi[2]);
          
          if(!rsiConfirmed)
          {
             if(InpEnableDetailedLogs)
-               Print("WAITING: SELL signal but RSI not confirmed (RSI=", DoubleToString(rsi, 1), 
+               Print("WAITING: SELL signal but RSI not confirmed (RSI=", DoubleToString(rsi[0], 1), 
                      " prev=", DoubleToString(rsi[1], 1), ")");
             return;
          }
@@ -795,16 +795,16 @@ void AnalyzeAndTrade(double rsi, double emaFast, double emaSlow,
       // UPTREND + RSI overbought (>70) -> BUY with strong momentum
       if(marketState == MARKET_UPTREND && InpAllowTrendingBuy)
       {
-         if(rsi > InpRSIOverbought)  // RSI > 70
+         if(rsi[0] > InpRSIOverbought)  // RSI > 70
          {
             // Momentum Confirmation: Check if RSI just crossed above 70 or is pulling back from extreme
             bool momentumConfirmed = true;
             if(InpUseMomentumConfirmation)
             {
                // Option 1: RSI just broke above 70
-               bool justBrokeAbove = (rsi > InpRSIOverbought && rsi[1] <= InpRSIOverbought);
+               bool justBrokeAbove = (rsi[0] > InpRSIOverbought && rsi[1] <= InpRSIOverbought);
                // Option 2: RSI was extreme (>75) and now pulling back slightly but still >70
-               bool pullingBackFromExtreme = (rsi > InpRSIOverbought && rsi < rsi[1] && rsi[1] > 75);
+               bool pullingBackFromExtreme = (rsi[0] > InpRSIOverbought && rsi[0] < rsi[1] && rsi[1] > 75);
                
                momentumConfirmed = justBrokeAbove || pullingBackFromExtreme;
             }
@@ -813,7 +813,7 @@ void AnalyzeAndTrade(double rsi, double emaFast, double emaSlow,
             {
                if(InpEnableDetailedLogs)
                   Print("WAITING: Momentum BUY but RSI not confirmed (RSI=", 
-                        DoubleToString(rsi, 1), " prev=", DoubleToString(rsi[1], 1), ")");
+                        DoubleToString(rsi[0], 1), " prev=", DoubleToString(rsi[1], 1), ")");
                return;
             }
             
@@ -834,16 +834,16 @@ void AnalyzeAndTrade(double rsi, double emaFast, double emaSlow,
       // DOWNTREND + RSI oversold (<30) -> SELL with strong momentum
       if(marketState == MARKET_DOWNTREND && InpAllowTrendingSell)
       {
-         if(rsi < InpRSIOversold)  // RSI < 30
+         if(rsi[0] < InpRSIOversold)  // RSI < 30
          {
             // Momentum Confirmation: Check if RSI just crossed below 30 or is bouncing from extreme
             bool momentumConfirmed = true;
             if(InpUseMomentumConfirmation)
             {
                // Option 1: RSI just broke below 30
-               bool justBrokeBelow = (rsi < InpRSIOversold && rsi[1] >= InpRSIOversold);
+               bool justBrokeBelow = (rsi[0] < InpRSIOversold && rsi[1] >= InpRSIOversold);
                // Option 2: RSI was extreme (<25) and now bouncing slightly but still <30
-               bool bouncingFromExtreme = (rsi < InpRSIOversold && rsi > rsi[1] && rsi[1] < 25);
+               bool bouncingFromExtreme = (rsi[0] < InpRSIOversold && rsi[0] > rsi[1] && rsi[1] < 25);
                
                momentumConfirmed = justBrokeBelow || bouncingFromExtreme;
             }
@@ -852,7 +852,7 @@ void AnalyzeAndTrade(double rsi, double emaFast, double emaSlow,
             {
                if(InpEnableDetailedLogs)
                   Print("WAITING: Momentum SELL but RSI not confirmed (RSI=", 
-                        DoubleToString(rsi, 1), " prev=", DoubleToString(rsi[1], 1), ")");
+                        DoubleToString(rsi[0], 1), " prev=", DoubleToString(rsi[1], 1), ")");
                return;
             }
             
@@ -901,7 +901,7 @@ void AnalyzeAndTrade(double rsi, double emaFast, double emaSlow,
       double distanceFromHigh = (rangeHigh - currentPrice) / GetPipValue();
       
       // BUY when RSI hits lower bound (oversold in range)
-      if(rsi < lowerBound)
+      if(rsi[0] < lowerBound)
       {
          // Filter 2: Must be near range bottom (support)
          if(distanceFromLow > InpSidewayMaxDistanceToBoundary)
@@ -913,7 +913,7 @@ void AnalyzeAndTrade(double rsi, double emaFast, double emaSlow,
          }
          
          // RSI Confirmation for sideways
-         bool rsiConfirmed = !InpUseRSIConfirmation || (rsi > rsi[1]);
+         bool rsiConfirmed = !InpUseRSIConfirmation || (rsi[0] > rsi[1]);
          
          if(!rsiConfirmed)
          {
@@ -930,7 +930,7 @@ void AnalyzeAndTrade(double rsi, double emaFast, double emaSlow,
          
          if(InpEnableDetailedLogs)
          {
-            Print("SIGNAL: SIDEWAYS BUY (RSI=", DoubleToString(rsi, 1), " < ", lowerBound, ")");
+            Print("SIGNAL: SIDEWAYS BUY (RSI=", DoubleToString(rsi[0], 1), " < ", lowerBound, ")");
             Print("  Range: ", DoubleToString(rangeLow, _Digits), " - ", DoubleToString(rangeHigh, _Digits), 
                   " (", DoubleToString(rangeSize, 0), " pips)");
             Print("  Distance from support: ", DoubleToString(distanceFromLow, 1), " pips");
@@ -941,7 +941,7 @@ void AnalyzeAndTrade(double rsi, double emaFast, double emaSlow,
       }
       
       // SELL when RSI hits upper bound (overbought in range)
-      if(rsi > upperBound)
+      if(rsi[0] > upperBound)
       {
          // Filter 2: Must be near range top (resistance)
          if(distanceFromHigh > InpSidewayMaxDistanceToBoundary)
@@ -953,7 +953,7 @@ void AnalyzeAndTrade(double rsi, double emaFast, double emaSlow,
          }
          
          // RSI Confirmation for sideways
-         bool rsiConfirmed = !InpUseRSIConfirmation || (rsi < rsi[1]);
+         bool rsiConfirmed = !InpUseRSIConfirmation || (rsi[0] < rsi[1]);
          
          if(!rsiConfirmed)
          {
@@ -970,7 +970,7 @@ void AnalyzeAndTrade(double rsi, double emaFast, double emaSlow,
          
          if(InpEnableDetailedLogs)
          {
-            Print("SIGNAL: SIDEWAYS SELL (RSI=", DoubleToString(rsi, 1), " > ", upperBound, ")");
+            Print("SIGNAL: SIDEWAYS SELL (RSI=", DoubleToString(rsi[0], 1), " > ", upperBound, ")");
             Print("  Range: ", DoubleToString(rangeLow, _Digits), " - ", DoubleToString(rangeHigh, _Digits), 
                   " (", DoubleToString(rangeSize, 0), " pips)");
             Print("  Distance from resistance: ", DoubleToString(distanceFromHigh, 1), " pips");
@@ -983,7 +983,7 @@ void AnalyzeAndTrade(double rsi, double emaFast, double emaSlow,
    
    if(InpEnableDetailedLogs)
    {
-      Print("NO SIGNAL: Market=", marketStateStr, " | RSI=", DoubleToString(rsi, 1), 
+      Print("NO SIGNAL: Market=", marketStateStr, " | RSI=", DoubleToString(rsi[0], 1), 
             " | ADX=", DoubleToString(adx, 1));
    }
 }
