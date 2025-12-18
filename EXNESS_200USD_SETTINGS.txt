@@ -1,0 +1,250 @@
+# ═══════════════════════════════════════════════════════════
+# EA SETTINGS - $200 STANDARD ACCOUNT (EXNESS/XM)
+# ═══════════════════════════════════════════════════════════
+# ⚠️ WARNING: High risk với $200
+# Expected monthly profit: $10-40 (5-20%)
+# Max drawdown risk: -$40-60 (-20-30%)
+# Win rate needed: >60% để profitable
+# ═══════════════════════════════════════════════════════════
+
+# ═══ RISK MANAGEMENT (CRITICAL!) ═══
+InpPositionSizePercent = 1.0
+# 1% of $200 = $2 per trade
+# Với Gold SL 30 pips = ~$6 actual risk (~3% account)
+# Với EURUSD SL 30 pips = ~$3 actual risk (~1.5% account)
+
+InpStopLossPips = 30
+InpTakeProfitPips = 90
+# R:R = 1:3 (tight SL, wide TP)
+# Cần win rate >30% để breakeven
+# Target win rate: 45-55%
+
+InpSidewayStopLossPips = 25
+InpSidewayTakeProfitPips = 75
+# Sideways tighter (nếu dùng)
+
+InpBreakevenPips = 15
+# Move to BE nhanh để protect capital
+
+# ═══ POSITION LIMITS ═══
+InpUseAutoMaxPositions = false
+InpMaxPositions = 2
+# CHỈ 2 LỆNH MAX cùng lúc
+# Max risk: ~$12 (~6% account)
+# Tránh margin call!
+
+# ═══ TRAILING STOP ═══
+InpUseTrailingStop = true
+InpTrailingActivatePips = 25
+InpTrailingDistancePips = 15
+# Activate sớm, trail chặt
+# Lock profit nhanh
+
+# ═══ TRADING MODES ═══
+# Strategy 1: Conservative (Recommended)
+InpAllowTrendingBuy = true
+InpAllowTrendingSell = true
+InpAllowMomentumTrade = false      # TẮT (too aggressive)
+InpAllowSidewayTrade = false       # TẮT (unpredictable)
+
+# Strategy 2: Moderate (If demo profitable >1 week)
+# InpAllowTrendingBuy = true
+# InpAllowTrendingSell = true
+# InpAllowMomentumTrade = true      # BẬT after test
+# InpAllowSidewayTrade = false
+
+# ═══ FILTERS (VERY STRICT) ═══
+InpMaxSpreadPips = 3.0
+# EURUSD: OK (0.5-1.2 pips)
+# Gold: Borderline (2.5-3.5 pips)
+# Reject khi spread spike
+
+InpVolumeMultiplier = 1.3
+# Volume phải > 1.3x average
+InpMinATRMultiplier = 0.9
+# ATR phải ổn định
+
+InpUseRSIConfirmation = true
+InpUseCandleConfirmation = true
+# BẬT HẾT confirmations
+
+# ═══ COOLDOWN ═══
+InpMinutesBetwenTrades = 120
+# 2 giờ giữa các lệnh
+# Max 12 trades/day nếu cả ngày
+# Realistic: 2-4 trades/day
+
+# ═══ SESSION FILTERS ═══
+InpUseTimeFilter = true
+
+# OPTION 1: EURUSD Focus (Spread thấp)
+InpTradeAsianSession = false
+InpTradeEuropeanSession = true     # 7-16 UTC (best for EUR)
+InpTradeUSSession = true           # 13-22 UTC (EUR/USD overlap)
+
+# OPTION 2: GOLD Focus (Nếu trade XAU)
+# InpTradeAsianSession = true      # Gold active Asian
+# InpTradeEuropeanSession = true
+# InpTradeUSSession = false        # Tránh US volatility
+
+# ═══ INDICATORS ═══
+InpRSIPeriod = 14
+InpRSIOversold = 30
+InpRSIOverbought = 70
+
+InpEMAFast = 34
+InpEMASlow = 89
+
+InpMinADX = 25
+# ADX > 25 = trend confirmed
+# Tránh trade khi ADX < 25 (choppy)
+
+InpADXPeriod = 14
+InpATRPeriod = 14
+
+# ═══ VOLUME ═══
+InpVolumePeriod = 20
+
+# ═══ SIDEWAYS (Disabled) ═══
+InpSidewayAnalysisPeriod = 50
+InpSidewayMinRangePips = 200
+InpSidewayMaxDistanceFromBoundary = 50
+
+# ═══ DEBUG ═══
+InpEnableDetailedLogs = false
+# TẮT để tránh spam logs
+# BẬT nếu debug
+
+
+# ═══════════════════════════════════════════════════════════
+# EXNESS-SPECIFIC SETTINGS
+# ═══════════════════════════════════════════════════════════
+
+ACCOUNT TYPE: Standard
+LEVERAGE: 1:Unlimited (auto for $200)
+→ EA sẽ tự tính lot size dựa trên margin available
+
+RECOMMENDED SYMBOLS FOR $200:
+1. EURUSD (Best choice)
+   - Spread: 0.5-0.7 pips
+   - 0.01 lot = ~$1 per pip
+   - SL 30 pips = ~$3 risk
+   
+2. GBPUSD (Alternative)
+   - Spread: 0.8-1.2 pips
+   - Similar to EUR
+   
+3. XAUUSD (Risky but profitable)
+   - Spread: 1.5-2.5 pips
+   - 0.01 lot = ~$0.10 per pip
+   - SL 30 pips = ~$3 risk
+   - More volatile = higher profit potential
+
+⚠️ AVOID với $200:
+- BTCUSD (spread 50-100 pips!)
+- US30 (margin cao)
+- Nikkei225 (margin cao)
+- Exotic pairs (spread >5 pips)
+
+
+# ═══════════════════════════════════════════════════════════
+# DEPLOYMENT PLAN
+# ═══════════════════════════════════════════════════════════
+
+WEEK 1: DEMO MODE
+1. Open Exness Demo $10,000
+2. Attach EA to EURUSD M15
+3. Use these settings
+4. Monitor 5-7 days
+5. Goal: Win rate >50%, profit factor >1.5
+
+WEEK 2: LIVE $200 (IF DEMO GOOD)
+1. Deposit $200 Exness Standard
+2. Start with EURUSD ONLY
+3. Same settings
+4. Monitor DAILY
+5. Max risk per day: -$10 (5%)
+
+MONTH 1 TARGET:
+- Profit: +$10-30 (5-15%)
+- Max drawdown: <20%
+- Win rate: >45%
+- Trades: 40-80
+
+IF PROFITABLE AFTER 1 MONTH:
+→ Continue
+→ Consider adding Gold
+
+IF LOSS >15% AFTER 1 MONTH:
+→ STOP and review
+→ Adjust settings or quit
+
+
+# ═══════════════════════════════════════════════════════════
+# RISK CALCULATOR
+# ═══════════════════════════════════════════════════════════
+
+Starting balance: $200
+
+SCENARIO 1: Conservative (Settings above)
+- Risk per trade: 3%
+- 5 losses in row = -$30 (-15%)
+- Balance after: $170
+- Still tradeable ✅
+
+SCENARIO 2: Moderate (2% position size)
+- Risk per trade: 6%
+- 5 losses in row = -$60 (-30%)
+- Balance after: $140
+- Risky zone ⚠️
+
+SCENARIO 3: Aggressive (3% position size)
+- Risk per trade: 9%
+- 5 losses in row = -$90 (-45%)
+- Balance after: $110
+- Close to margin call ❌
+
+→ STICK WITH 1% POSITION SIZE!
+
+
+# ═══════════════════════════════════════════════════════════
+# MONTHLY EXPECTATIONS
+# ═══════════════════════════════════════════════════════════
+
+REALISTIC với $200:
+Month 1: $200 → $210-230 (+5-15%) hoặc $170-190 (-5-15%)
+Month 2: $220 → $230-260 
+Month 3: $250 → $260-300
+
+SAU 3 THÁNG PROFITABLE:
+→ Withdraw $100 (take profit)
+→ Trade với $200 again (risk-free capital)
+→ Repeat
+
+SAU 6 THÁNG:
+→ Total profit: $100-200
+→ Add $300-500 vốn mới
+→ Scale to $500-700 account
+→ Better position sizes
+
+
+# ═══════════════════════════════════════════════════════════
+# EMERGENCY RULES
+# ═══════════════════════════════════════════════════════════
+
+STOP TRADING NẾU:
+1. Loss -20% trong 1 tuần (-$40)
+2. Loss 10 lệnh liên tiếp
+3. Win rate <35% sau 50 trades
+4. Profit factor <1.2 sau 1 tháng
+
+DELETE EA NẾU:
+1. Loss -40% total (-$80)
+2. Margin call
+3. Consecutive months loss
+
+PSYCHOLOGY:
+- $200 loss = 1 bữa nhậu ☕
+- Không ảnh hưởng cuộc sống
+- Treat như học phí
+- NO REVENGE TRADING!

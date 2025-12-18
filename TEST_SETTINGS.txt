@@ -1,0 +1,40 @@
+# SETTINGS ĐỂ TEST - DISABLE HẾT FILTERS
+
+## 1. ENABLE TẤT CẢ MODES
+InpAllowTrendingBuy = true
+InpAllowTrendingSell = true
+InpAllowMomentumTrade = true
+InpAllowSidewayTrade = true
+
+## 2. DISABLE TIME FILTER (hoặc bật hết sessions)
+InpUseTimeFilter = false
+# Hoặc nếu true thì:
+InpTradeAsianSession = true
+InpTradeEuropeanSession = true
+InpTradeUSSession = true
+
+## 3. DISABLE SPREAD FILTER
+InpMaxSpreadPips = 0  # 0 = disabled
+
+## 4. GIẢM VOLUME/ATR FILTERS
+InpVolumeMultiplier = 0.8  # Thấp hơn để dễ pass
+InpMinATRMultiplier = 0.5  # Thấp hơn
+
+## 5. DISABLE CONFIRMATIONS
+InpUseRSIConfirmation = false
+InpUseCandleConfirmation = false
+InpUseMomentumConfirmation = false
+
+## 6. GIẢM COOLDOWN
+InpMinutesBetwenTrades = 30  # Từ 120 xuống 30
+
+## 7. TĂNG MAX POSITIONS
+InpMaxPositions = 10
+InpUseAutoMaxPositions = false
+
+## 8. GIẢM ADX REQUIREMENT
+InpMinADX = 15  # Từ 20 xuống 15
+
+## 9. SL/TP NORMAL
+InpStopLossPips = 40
+InpTakeProfitPips = 100
