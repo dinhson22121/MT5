@@ -989,14 +989,77 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
 }
 
 //+------------------------------------------------------------------+
-double CalculateLotSize(double entryPrice)
+double CalculateLotSize(double entryPrice, int slPips)
 {
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-   double positionValueUSD = balance * (InpPositionSizePercent / 100.0);
+   double riskAmountUSD = balance * (InpPositionSizePercent / 100.0);
+   
+   // Calculate pip value for 1 lot
+   double pipValue = GetPipValue();
    double contractSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
    
-   double lotSize = positionValueUSD / (contractSize * entryPrice);
+   // Calculate money value per pip for 1 lot
+   double moneyPerPipPerLot = 0;
    
+   string symbol = _Symbol;
+   
+   // Special calculation for different instrument types
+   if(StringFind(symbol, "XAU") >= 0 || StringFind(symbol, "GOLD") >= 0)
+   {
+      // Gold: 1 lot = 100 oz, 1 pip = 0.10, value = 100 * 0.10 = $10 per pip
+      moneyPerPipPerLot = contractSize * pipValue;  // 100 * 0.10 = $10
+   }
+   else if(StringFind(symbol, "BTC") >= 0)
+   {
+      // BTC: 1 lot = 1 BTC, 1 pip = 10.0 (100 pips = $1000)
+      // At 0.01 lot, 1 pip = 0.01 * 10 = $0.10
+      moneyPerPipPerLot = pipValue;  // Already $10 per pip for 1 lot
+   }
+   else if(StringFind(symbol, "US30") >= 0 || StringFind(symbol, "DOW") >= 0 || 
+           StringFind(symbol, "NI225") >= 0 || StringFind(symbol, "NIKKEI") >= 0)
+   {
+      // Indices: Contract size varies by broker
+      moneyPerPipPerLot = contractSize * pipValue;
+   }
+   else
+   {
+      // Forex pairs: Calculate based on quote currency
+      string quoteCurrency = SymbolInfoString(_Symbol, SYMBOL_CURRENCY_PROFIT);
+      
+      if(quoteCurrency == "USD")
+      {
+         // Quote is USD (e.g., EURUSD, GBPUSD)
+         // 1 lot = 100,000 units, 1 pip = 0.0001
+         // Pip value = 100,000 * 0.0001 = $10
+         moneyPerPipPerLot = contractSize * pipValue;
+      }
+      else
+      {
+         // Quote is not USD (e.g., USDJPY, USDCHF)
+         // Need conversion rate
+         double conversionRate = 1.0;
+         
+         if(quoteCurrency == "JPY")
+         {
+            // For USDJPY: 1 lot, 1 pip movement = 1000 JPY
+            // Convert to USD: 1000 / current rate
+            conversionRate = 1.0 / entryPrice;
+            moneyPerPipPerLot = (contractSize * pipValue) * conversionRate;
+         }
+         else
+         {
+            // Generic forex
+            moneyPerPipPerLot = contractSize * pipValue;
+         }
+      }
+   }
+   
+   // Calculate lot size based on risk
+   // Risk = SL pips * money per pip * lot size
+   // lotSize = Risk / (SL pips * money per pip)
+   double lotSize = riskAmountUSD / (slPips * moneyPerPipPerLot);
+   
+   // Apply broker constraints
    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
    double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
@@ -1006,6 +1069,17 @@ double CalculateLotSize(double entryPrice)
    if(lotSize < minLot) lotSize = minLot;
    if(lotSize > maxLot) lotSize = maxLot;
    
+   if(InpEnableDetailedLogs)
+   {
+      Print("LOT SIZE CALCULATION:");
+      Print("  Balance: $", DoubleToString(balance, 2));
+      Print("  Risk %: ", InpPositionSizePercent, "% = $", DoubleToString(riskAmountUSD, 2));
+      Print("  SL Pips: ", slPips);
+      Print("  Money per pip (1 lot): $", DoubleToString(moneyPerPipPerLot, 2));
+      Print("  Calculated Lot: ", DoubleToString(lotSize, 2));
+      Print("  Min/Max Lot: ", minLot, "/", maxLot);
+   }
+   
    return NormalizeDouble(lotSize, 2);
 }
 
@@ -1013,7 +1087,7 @@ double CalculateLotSize(double entryPrice)
 void OpenPosition(bool isBuy, int slPips, int tpPips, string comment)
 {
    double price = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double lot = CalculateLotSize(price);
+   double lot = CalculateLotSize(price, slPips);  // Pass slPips parameter
    double sl, tp;
    
    CalculateSLTP_FixedPips(price, isBuy, slPips, tpPips, sl, tp);
