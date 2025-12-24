@@ -67,6 +67,9 @@ input double InpMinATRMultiplier = 0.8;        // OPTIMIZED: Enable ATR filter
 input int InpATRPeriod = 14;
 input int InpMaxSpreadPips = 5;                // Max spread in pips (0=disabled)
 input bool InpUseCandleConfirmation = true;    // Check candle direction
+input bool InpRequireCandlePattern = true;     // Require Engulfing/Pinbar pattern
+input double InpMinPinbarWickRatio = 2.0;      // Min wick/body ratio for Pinbar (2.0 = wick 2x body)
+input double InpMinEngulfingRatio = 1.2;       // Min engulfing ratio (1.2 = 120% of prev candle)
 
 input group "=== Debug Settings ==="
 input bool InpEnableDetailedLogs = true;
@@ -318,32 +321,133 @@ double GetPipValue()
 }
 
 //+------------------------------------------------------------------+
-bool CheckCandleConfirmation(bool isBuySignal)
+bool CheckCandlePattern(bool isBuySignal, double currentVolume, double avgVolume)
 {
-   if(!InpUseCandleConfirmation)
-      return true;
+   if(!InpRequireCandlePattern)
+   {
+      // Fallback to simple direction check if pattern not required
+      if(!InpUseCandleConfirmation)
+         return true;
+      
+      double open = iOpen(_Symbol, PERIOD_M15, 1);
+      double close = iClose(_Symbol, PERIOD_M15, 1);
+      
+      if(isBuySignal)
+         return (close > open);
+      else
+         return (close < open);
+   }
    
-   double open = iOpen(_Symbol, PERIOD_M15, 1);   // Previous candle
-   double close = iClose(_Symbol, PERIOD_M15, 1);
+   // Get last 2 candles for pattern detection
+   double open1 = iOpen(_Symbol, PERIOD_M15, 1);    // Previous candle
+   double close1 = iClose(_Symbol, PERIOD_M15, 1);
+   double high1 = iHigh(_Symbol, PERIOD_M15, 1);
+   double low1 = iLow(_Symbol, PERIOD_M15, 1);
+   
+   double open2 = iOpen(_Symbol, PERIOD_M15, 2);    // 2 candles ago
+   double close2 = iClose(_Symbol, PERIOD_M15, 2);
+   double high2 = iHigh(_Symbol, PERIOD_M15, 2);
+   double low2 = iLow(_Symbol, PERIOD_M15, 2);
+   
+   // Volume must be high for valid pattern
+   if(currentVolume <= avgVolume * 1.3)
+   {
+      if(InpEnableDetailedLogs)
+         Print("PATTERN REJECT: Volume too low (", (int)currentVolume, " vs ", (int)avgVolume, ")");
+      return false;
+   }
    
    if(isBuySignal)
    {
-      // For BUY: prefer bullish candle (close > open)
-      if(close > open)
+      // BULLISH PATTERNS
+      
+      // 1. BULLISH ENGULFING
+      // Current candle is bullish and completely engulfs previous bearish candle
+      bool isBullish1 = (close1 > open1);
+      bool isBearish2 = (close2 < open2);
+      double body1 = MathAbs(close1 - open1);
+      double body2 = MathAbs(close2 - open2);
+      
+      bool bullishEngulfing = isBullish1 && isBearish2 && 
+                              (close1 > open2) &&           // Close above prev open
+                              (open1 < close2) &&           // Open below prev close
+                              (body1 > body2 * InpMinEngulfingRatio); // Body is larger
+      
+      if(bullishEngulfing)
+      {
+         if(InpEnableDetailedLogs)
+            Print("✅ BULLISH ENGULFING detected | Body ratio: ", DoubleToString(body1/body2, 2));
          return true;
-      else if(InpEnableDetailedLogs)
-         Print("INFO: Bearish candle, but BUY signal still valid");
+      }
+      
+      // 2. BULLISH PINBAR (Hammer)
+      // Long lower wick, small body at top, little/no upper wick
+      double totalRange1 = high1 - low1;
+      double lowerWick1 = MathMin(open1, close1) - low1;
+      double upperWick1 = high1 - MathMax(open1, close1);
+      
+      bool bullishPinbar = isBullish1 &&
+                          (lowerWick1 > body1 * InpMinPinbarWickRatio) &&  // Long lower wick
+                          (upperWick1 < body1 * 0.3) &&                     // Small upper wick
+                          (totalRange1 > 0) &&
+                          (body1 > 0);
+      
+      if(bullishPinbar)
+      {
+         if(InpEnableDetailedLogs)
+            Print("✅ BULLISH PINBAR (Hammer) detected | Wick/Body: ", DoubleToString(lowerWick1/body1, 2));
+         return true;
+      }
+      
+      if(InpEnableDetailedLogs)
+         Print("PATTERN REJECT: No bullish pattern found (Engulfing or Pinbar)");
+      return false;
    }
    else
    {
-      // For SELL: prefer bearish candle (close < open)
-      if(close < open)
+      // BEARISH PATTERNS
+      
+      // 1. BEARISH ENGULFING
+      bool isBearish1 = (close1 < open1);
+      bool isBullish2 = (close2 > open2);
+      double body1 = MathAbs(close1 - open1);
+      double body2 = MathAbs(close2 - open2);
+      
+      bool bearishEngulfing = isBearish1 && isBullish2 && 
+                              (close1 < open2) &&           // Close below prev open
+                              (open1 > close2) &&           // Open above prev close
+                              (body1 > body2 * InpMinEngulfingRatio); // Body is larger
+      
+      if(bearishEngulfing)
+      {
+         if(InpEnableDetailedLogs)
+            Print("✅ BEARISH ENGULFING detected | Body ratio: ", DoubleToString(body1/body2, 2));
          return true;
-      else if(InpEnableDetailedLogs)
-         Print("INFO: Bullish candle, but SELL signal still valid");
+      }
+      
+      // 2. BEARISH PINBAR (Shooting Star)
+      // Long upper wick, small body at bottom, little/no lower wick
+      double totalRange1 = high1 - low1;
+      double upperWick1 = high1 - MathMax(open1, close1);
+      double lowerWick1 = MathMin(open1, close1) - low1;
+      
+      bool bearishPinbar = isBearish1 &&
+                          (upperWick1 > body1 * InpMinPinbarWickRatio) &&  // Long upper wick
+                          (lowerWick1 < body1 * 0.3) &&                     // Small lower wick
+                          (totalRange1 > 0) &&
+                          (body1 > 0);
+      
+      if(bearishPinbar)
+      {
+         if(InpEnableDetailedLogs)
+            Print("✅ BEARISH PINBAR (Shooting Star) detected | Wick/Body: ", DoubleToString(upperWick1/body1, 2));
+         return true;
+      }
+      
+      if(InpEnableDetailedLogs)
+         Print("PATTERN REJECT: No bearish pattern found (Engulfing or Pinbar)");
+      return false;
    }
-   
-   return true;  // Don't block, just inform
 }
 
 //+------------------------------------------------------------------+
@@ -625,7 +729,7 @@ int CountOpenPositions()
 void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow, 
                      double atr, double adx, double currentVolume)
 {
-   // Calculate average volume
+   // Calculate average volume (used for pattern confirmation)
    double avgVolume = 0;
    long volumeArray[];
    ArraySetAsSeries(volumeArray, true);
@@ -746,15 +850,16 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             return;
          }
          
-         // Candle Confirmation
-         if(!CheckCandleConfirmation(true))
+         // Pattern Confirmation (Engulfing or Pinbar)
+         if(!CheckCandlePattern(true, currentVolume, avgVolume))
          {
             if(InpEnableDetailedLogs)
-               Print("WARNING: BUY signal with bearish candle");
+               Print("BLOCKED: BUY signal but no valid candlestick pattern");
+            return;
          }
          
          if(InpEnableDetailedLogs)
-            Print("SIGNAL: BUY (Uptrend + RSI Oversold + CONFIRMED)");
+            Print("✅ SIGNAL: BUY (Uptrend + RSI Oversold + PATTERN CONFIRMED)");
          OpenPosition(true, InpStopLossPips, InpTakeProfitPips, "Trend_Buy");
          return;
       }
@@ -775,15 +880,16 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             return;
          }
          
-         // Candle Confirmation
-         if(!CheckCandleConfirmation(false))
+         // Pattern Confirmation (Engulfing or Pinbar)
+         if(!CheckCandlePattern(false, currentVolume, avgVolume))
          {
             if(InpEnableDetailedLogs)
-               Print("WARNING: SELL signal with bullish candle");
+               Print("BLOCKED: SELL signal but no valid candlestick pattern");
+            return;
          }
          
          if(InpEnableDetailedLogs)
-            Print("SIGNAL: SELL (Downtrend + RSI Overbought + CONFIRMED)");
+            Print("✅ SIGNAL: SELL (Downtrend + RSI Overbought + PATTERN CONFIRMED)");
          OpenPosition(false, InpStopLossPips, InpTakeProfitPips, "Trend_Sell");
          return;
       }
@@ -817,15 +923,16 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
                return;
             }
             
-            // Candle Confirmation
-            if(!CheckCandleConfirmation(true))
+            // Pattern Confirmation
+            if(!CheckCandlePattern(true, currentVolume, avgVolume))
             {
                if(InpEnableDetailedLogs)
-                  Print("WARNING: Momentum BUY with bearish candle");
+                  Print("BLOCKED: Momentum BUY but no valid candlestick pattern");
+               return;
             }
             
             if(InpEnableDetailedLogs)
-               Print("SIGNAL: MOMENTUM BUY (Uptrend + RSI>", InpRSIOverbought, " STRONG MOMENTUM + CONFIRMED)");
+               Print("✅ SIGNAL: MOMENTUM BUY (Uptrend + RSI>", InpRSIOverbought, " + PATTERN CONFIRMED)");
             OpenPosition(true, InpMomentumStopLossPips, InpMomentumTakeProfitPips, "Momentum_Buy");
             return;
          }
@@ -856,15 +963,16 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
                return;
             }
             
-            // Candle Confirmation
-            if(!CheckCandleConfirmation(false))
+            // Pattern Confirmation
+            if(!CheckCandlePattern(false, currentVolume, avgVolume))
             {
                if(InpEnableDetailedLogs)
-                  Print("WARNING: Momentum SELL with bullish candle");
+                  Print("BLOCKED: Momentum SELL but no valid candlestick pattern");
+               return;
             }
             
             if(InpEnableDetailedLogs)
-               Print("SIGNAL: MOMENTUM SELL (Downtrend + RSI<", InpRSIOversold, " STRONG MOMENTUM + CONFIRMED)");
+               Print("✅ SIGNAL: MOMENTUM SELL (Downtrend + RSI<", InpRSIOversold, " + PATTERN CONFIRMED)");
             OpenPosition(false, InpMomentumStopLossPips, InpMomentumTakeProfitPips, "Momentum_Sell");
             return;
          }
@@ -922,15 +1030,16 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             return;
          }
          
-         if(!CheckCandleConfirmation(true))
+         if(!CheckCandlePattern(true, currentVolume, avgVolume))
          {
             if(InpEnableDetailedLogs)
-               Print("WARNING: Sideways BUY with bearish candle");
+               Print("BLOCKED: Sideways BUY but no valid candlestick pattern");
+            return;
          }
          
          if(InpEnableDetailedLogs)
          {
-            Print("SIGNAL: SIDEWAYS BUY (RSI=", DoubleToString(rsi[0], 1), " < ", lowerBound, ")");
+            Print("✅ SIGNAL: SIDEWAYS BUY (RSI=", DoubleToString(rsi[0], 1), " < ", lowerBound, ")");
             Print("  Range: ", DoubleToString(rangeLow, _Digits), " - ", DoubleToString(rangeHigh, _Digits), 
                   " (", DoubleToString(rangeSize, 0), " pips)");
             Print("  Distance from support: ", DoubleToString(distanceFromLow, 1), " pips");
@@ -962,15 +1071,16 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             return;
          }
          
-         if(!CheckCandleConfirmation(false))
+         if(!CheckCandlePattern(false, currentVolume, avgVolume))
          {
             if(InpEnableDetailedLogs)
-               Print("WARNING: Sideways SELL with bullish candle");
+               Print("BLOCKED: Sideways SELL but no valid candlestick pattern");
+            return;
          }
          
          if(InpEnableDetailedLogs)
          {
-            Print("SIGNAL: SIDEWAYS SELL (RSI=", DoubleToString(rsi[0], 1), " > ", upperBound, ")");
+            Print("✅ SIGNAL: SIDEWAYS SELL (RSI=", DoubleToString(rsi[0], 1), " > ", upperBound, ")");
             Print("  Range: ", DoubleToString(rangeLow, _Digits), " - ", DoubleToString(rangeHigh, _Digits), 
                   " (", DoubleToString(rangeSize, 0), " pips)");
             Print("  Distance from resistance: ", DoubleToString(distanceFromHigh, 1), " pips");
