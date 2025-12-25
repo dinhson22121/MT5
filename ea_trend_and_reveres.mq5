@@ -27,7 +27,7 @@ input double InpVolumeMultiplier = 1.2;        // OPTIMIZED: 120% avg volume
 
 input group "=== Risk Management - FIXED PIPS ==="
 input double InpPositionSizePercent = 2.0;    // SAFE: 2% per trade (was 10%)
-input int InpStopLossPips = 40;               // OPTIMIZED: 15 gia vang / $1500 BTC
+input int InpStopLossPips = 50;               // OPTIMIZED: 15 gia vang / $1500 BTC
 input int InpTakeProfitPips = 100;            // IMPROVED: R:R = 1:2.5 (was 80)
 input int InpBreakevenPips = 60;              // IMPROVED: 1.5x SL (was 35)
 input bool InpUseTrailingStop = true;         // Enable Trailing Stop
@@ -40,11 +40,11 @@ input int InpMagicNumber = 123456;
 input group "=== Trading Modes ==="
 input bool InpAllowTrendingBuy = true;         // Trade BUY in uptrend
 input bool InpAllowTrendingSell = true;        // Trade SELL in downtrend
-input bool InpAllowSidewayTrade = false;        // NEW: Trade in sideways market
+input bool InpAllowSidewayTrade = true;        // NEW: Trade in sideways market
 
 input group "=== Sideways Trading Settings ==="
 input int InpSidewayStopLossPips = 50;         // IMPROVED: Tighter SL (was 100)
-input int InpSidewayTakeProfitPips = 150;      // TP stays same (R:R = 1:3 now!)
+input int InpSidewayTakeProfitPips = 100;      // TP stays same (R:R = 1:3 now!)
 input int InpSidewayRangePeriod = 50;          // Bars to calculate range (H1 or H4)
 input int InpSidewayMinRangePips = 200;        // Min range size to trade (skip small ranges)
 input int InpSidewayMaxDistanceToBoundary = 50; // Max distance from support/resistance
@@ -52,12 +52,12 @@ input int InpSidewayMaxDistanceToBoundary = 50; // Max distance from support/res
 input group "=== Momentum Trading Settings ==="
 input bool InpAllowMomentumTrade = true;       // Enable Momentum (trend-following)
 input bool InpUseMomentumConfirmation = true;  // Wait for RSI reversal after extreme
-input int InpMomentumStopLossPips = 30;        // Tighter SL for momentum
+input int InpMomentumStopLossPips = 50;        // Tighter SL for momentum
 input int InpMomentumTakeProfitPips = 120;     // Higher TP (R:R = 1:4)
 
 input group "=== Trading Rules ==="
-input int InpMinutesBetwenTrades = 120;        // OPTIMIZED: 2 hours cooldown
-input bool InpUseTimeFilter = true;            // Enable session filter (auto-disable for crypto)
+input int InpMinutesBetwenTrades = 30;        // OPTIMIZED: 2 hours cooldown
+input bool InpUseTimeFilter = false;            // Enable session filter (auto-disable for crypto)
 input bool InpTradeAsianSession = true;        // Asian: 1:00-9:00 UTC (Tokyo)
 input bool InpTradeEuropeanSession = true;     // European: 7:00-16:00 UTC (London)
 input bool InpTradeUSSession = true;           // US: 13:00-22:00 UTC (New York)
