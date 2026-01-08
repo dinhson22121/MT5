@@ -69,6 +69,8 @@ input double InpMomentumATRMultiplier = 1.2;    // HIGH ATR required (was global
 
 input group "=== Trading Rules ==="
 input int InpMinutesBetwenTrades = 30;        // OPTIMIZED: 2 hours cooldown
+input int InpCooldownSeconds = 1800;          // Cooldown in seconds (overrides minutes if >0)
+input bool InpAllowOnCurrentBar = false;      // Allow trading on currently forming bar (for testing)
 input bool InpUseTimeFilter = false;            // Enable session filter (auto-disable for crypto)
 input bool InpTradeAsianSession = true;        // Asian: 1:00-9:00 UTC (Tokyo)
 input bool InpTradeEuropeanSession = true;     // European: 7:00-16:00 UTC (London)
@@ -85,6 +87,8 @@ input double InpMinEngulfingRatio = 1.2;       // Min engulfing ratio (1.2 = 120
 
 input group "=== Debug Settings ==="
 input bool InpEnableDetailedLogs = true;
+input bool InpEnableFileLogging = true;            // Write signal/trade events to Files\EA_DebugLog.csv
+input string InpDebugLogFileName = "EA_DebugLog.csv";  // Filename in MT5 Files folder
 
 //--- Global Variables
 datetime g_lastTradeTime = 0;
@@ -727,7 +731,7 @@ bool CheckTradingConditions()
    }
    
    int secondsSinceLastTrade = (int)(TimeCurrent() - g_lastTradeTime);
-   int requiredSeconds = InpMinutesBetwenTrades * 60;
+   int requiredSeconds = (InpCooldownSeconds > 0) ? InpCooldownSeconds : (InpMinutesBetwenTrades * 60);
    
    if(g_lastTradeTime > 0 && secondsSinceLastTrade < requiredSeconds)
    {
@@ -774,12 +778,58 @@ int CountOpenPositions()
       ulong ticket = PositionGetTicket(i);
       if(ticket <= 0) continue;
       
-      if(PositionGetString(POSITION_SYMBOL) == _Symbol && 
-         PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
-         count++;
+      if(PositionSelectByTicket(ticket))
+      {
+         if(PositionGetString(POSITION_SYMBOL) == _Symbol && 
+            PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+            count++;
+      }
+      else
+      {
+         if(InpEnableDetailedLogs) Print("WARN: PositionSelectByTicket failed for ticket ", ticket);
+      }
    }
    return count;
 }
+
+//+------------------------------------------------------------------+
+// File logging helpers (CSV) for backtest analysis
+void DebugLogCSV(string line)
+{
+   if(!InpEnableFileLogging) return;
+   int fh = FileOpen(InpDebugLogFileName, FILE_READ|FILE_WRITE|FILE_CSV|FILE_COMMON);
+   if(fh == INVALID_HANDLE)
+   {
+      fh = FileOpen(InpDebugLogFileName, FILE_WRITE|FILE_CSV|FILE_COMMON);
+      if(fh == INVALID_HANDLE)
+      {
+         if(InpEnableDetailedLogs) Print("ERROR: Cannot open debug file ", InpDebugLogFileName);
+         return;
+      }
+   }
+   FileSeek(fh, 0, SEEK_END);
+   FileWriteString(fh, line);
+   FileWriteString(fh, "\r\n");
+   FileClose(fh);
+}
+
+void LogSignalEvent(string eventType, string signalType, string reason, double rsiVal, double avgVol, double currVol, double atrVal, double avgATRVal, double adxVal, string marketStateStr)
+{
+   if(!InpEnableFileLogging) return;
+   string ts = TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS);
+   string rec = ts + "," + _Symbol + "," + eventType + "," + signalType + "," + marketStateStr + "," + reason + "," + DoubleToString(rsiVal,1) + "," + DoubleToString(avgVol,0) + "," + DoubleToString(currVol,0) + "," + DoubleToString(atrVal,4) + "," + DoubleToString(avgATRVal,4) + "," + DoubleToString(adxVal,1) + "," + IntegerToString(CountOpenPositions()) + "," + IntegerToString(GetMaxPositions());
+   DebugLogCSV(rec);
+}
+
+void LogTradeEvent(string stage, string comment, bool isBuy, double price, double sl, double tp, double lot, int resultCode, ulong ticket)
+{
+   if(!InpEnableFileLogging) return;
+   string ts = TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS);
+   string dir = isBuy ? "BUY" : "SELL";
+   string ticketStr = (ticket == 0) ? "0" : IntegerToString((int)ticket);
+   string rec = ts + "," + _Symbol + ",TRADE," + stage + "," + comment + "," + dir + "," + DoubleToString(price, _Digits) + "," + DoubleToString(sl, _Digits) + "," + DoubleToString(tp, _Digits) + "," + DoubleToString(lot,2) + "," + IntegerToString(resultCode) + "," + ticketStr + "," + IntegerToString(CountOpenPositions()) + "," + IntegerToString(GetMaxPositions());
+   DebugLogCSV(rec);
+}  
 
 //+------------------------------------------------------------------+
 void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow, 
@@ -790,7 +840,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    long volumeArray[];
    ArraySetAsSeries(volumeArray, true);
    
-   if(CopyTickVolume(_Symbol, PERIOD_M15, 1, InpVolumePeriod, volumeArray) > 0)
+   if(CopyTickVolume(_Symbol, PERIOD_M15, 0, InpVolumePeriod, volumeArray) > 0)
    {
       for(int i = 0; i < InpVolumePeriod; i++)
          avgVolume += (double)volumeArray[i];
@@ -898,6 +948,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    {
       if(InpEnableDetailedLogs)
          Print("NO SIGNAL: Volume too low (", (int)currentVolume, " vs ", (int)avgVolume, ")");
+      LogSignalEvent("REJECT", "VolumeLow", "volume < avg*mult", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
       return;
    }
    
@@ -905,6 +956,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    {
       if(InpEnableDetailedLogs)
          Print("NO SIGNAL: ATR too low");
+      LogSignalEvent("REJECT", "ATRLow", "atr < avg*minMult", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
       return;
    }
    
@@ -927,19 +979,30 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             if(InpEnableDetailedLogs)
                Print("WAITING: TREND BUY - RSI not reversing yet (RSI=", DoubleToString(rsi[0], 1), 
                      " prev=", DoubleToString(rsi[1], 1), ")");
+            LogSignalEvent("WAIT", "Trend_Buy", "RSI not reversing", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
             return;
          }
          
          // Pattern Confirmation REQUIRED: Bullish Engulfing
          if(!CheckCandlePattern(true, currentVolume, avgVolume))
          {
-            if(InpEnableDetailedLogs)
-               Print("WAITING: TREND BUY - No bullish engulfing pattern yet");
-            return;
+            if(!InpAllowOnCurrentBar)
+            {
+               if(InpEnableDetailedLogs)
+                  Print("WAITING: TREND BUY - No bullish engulfing pattern yet");
+               LogSignalEvent("REJECT", "Trend_Buy", "PatternMissing", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+               return;
+            }
+            else
+            {
+               if(InpEnableDetailedLogs)
+                  Print("FORCED: TREND BUY - Pattern bypass due to InpAllowOnCurrentBar");
+            }
          }
          
          if(InpEnableDetailedLogs)
             Print("✅ SIGNAL: TREND BUY (Uptrend + RSI Reversal + Bullish Engulfing)");
+         LogSignalEvent("SIGNAL", "Trend_Buy", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
          OpenPosition(true, InpStopLossPips, InpTakeProfitPips, "Trend_Buy");
          return;
       }
@@ -957,19 +1020,30 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             if(InpEnableDetailedLogs)
                Print("WAITING: TREND SELL - RSI not reversing yet (RSI=", DoubleToString(rsi[0], 1), 
                      " prev=", DoubleToString(rsi[1], 1), ")");
+            LogSignalEvent("WAIT", "Trend_Sell", "RSI not reversing", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
             return;
          }
          
          // Pattern Confirmation REQUIRED: Bearish Engulfing
          if(!CheckCandlePattern(false, currentVolume, avgVolume))
          {
-            if(InpEnableDetailedLogs)
-               Print("WAITING: TREND SELL - No bearish engulfing pattern yet");
-            return;
+            if(!InpAllowOnCurrentBar)
+            {
+               if(InpEnableDetailedLogs)
+                  Print("WAITING: TREND SELL - No bearish engulfing pattern yet");
+               LogSignalEvent("REJECT", "Trend_Sell", "PatternMissing", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+               return;
+            }
+            else
+            {
+               if(InpEnableDetailedLogs)
+                  Print("FORCED: TREND SELL - Pattern bypass due to InpAllowOnCurrentBar");
+            }
          }
          
          if(InpEnableDetailedLogs)
             Print("✅ SIGNAL: TREND SELL (Downtrend + RSI Reversal + Bearish Engulfing)");
+         LogSignalEvent("SIGNAL", "Trend_Sell", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
          OpenPosition(false, InpStopLossPips, InpTakeProfitPips, "Trend_Sell");
          return;
       }
@@ -990,6 +1064,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             Print("  ADX: ", DoubleToString(adx, 1), " (strong trend)");
             Print("✅ ENTRY: Riding the strong momentum wave!");
          }
+         LogSignalEvent("SIGNAL", "Momentum_Buy", "MomentumConfirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
          OpenPosition(true, InpMomentumStopLossPips, InpMomentumTakeProfitPips, "Momentum_Buy");
          return;
       }
@@ -1006,6 +1081,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             Print("  ADX: ", DoubleToString(adx, 1), " (strong trend)");
             Print("✅ ENTRY: Riding the strong momentum wave!");
          }
+         LogSignalEvent("SIGNAL", "Momentum_Sell", "MomentumConfirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
          OpenPosition(false, InpMomentumStopLossPips, InpMomentumTakeProfitPips, "Momentum_Sell");
          return;
       }
@@ -1088,6 +1164,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             Print("  Price rejection: CONFIRMED");
          }
          
+         LogSignalEvent("SIGNAL", "Sideway_Buy", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
          OpenPosition(true, InpSidewayStopLossPips, InpSidewayTakeProfitPips, "Sideway_Buy");
          return;
       }
@@ -1140,6 +1217,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             Print("  Price rejection: CONFIRMED");
          }
          
+         LogSignalEvent("SIGNAL", "Sideway_Sell", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
          OpenPosition(false, InpSidewayStopLossPips, InpSidewayTakeProfitPips, "Sideway_Sell");
          return;
       }
@@ -1150,6 +1228,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       Print("NO SIGNAL: Market=", marketStateStr, " | RSI=", DoubleToString(rsi[0], 1), 
             " | ADX=", DoubleToString(adx, 1));
    }
+   LogSignalEvent("NO_SIGNAL", "NoTrade", "MarketStateNoSignal", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
 }
 
 //+------------------------------------------------------------------+
@@ -1176,8 +1255,15 @@ double CalculateLotSize(double entryPrice, int slPips)
    else if(StringFind(symbol, "BTC") >= 0)
    {
       // BTC: 1 lot = 1 BTC, 1 pip = 10.0 (100 pips = $1000)
-      // At 0.01 lot, 1 pip = 0.01 * 10 = $0.10
-      moneyPerPipPerLot = pipValue;  // Already $10 per pip for 1 lot
+      // Use contract size to be consistent with other instruments
+      moneyPerPipPerLot = contractSize * pipValue;
+   }
+   
+   // Safety guard: avoid division by zero
+   if(moneyPerPipPerLot <= 0)
+   {
+      if(InpEnableDetailedLogs) Print("WARN: moneyPerPipPerLot <= 0 for ", _Symbol, " (pipValue=", DoubleToString(pipValue,2), ", contractSize=", DoubleToString(contractSize,2), "). Falling back to 1.0");
+      moneyPerPipPerLot = 1.0;
    }
    else if(StringFind(symbol, "US30") >= 0 || StringFind(symbol, "DOW") >= 0 || 
            StringFind(symbol, "NI225") >= 0 || StringFind(symbol, "NIKKEI") >= 0)
@@ -1266,14 +1352,19 @@ void OpenPosition(bool isBuy, int slPips, int tpPips, string comment)
    if(isBuy && (sl >= price || tp <= price))
    {
       Print("ERROR: Invalid BUY SL/TP! Cancelled.");
+      LogTradeEvent("CANCEL", comment, isBuy, price, sl, tp, lot, -1, 0);
       return;
    }
    
    if(!isBuy && (sl <= price || tp >= price))
    {
       Print("ERROR: Invalid SELL SL/TP! Cancelled.");
+      LogTradeEvent("CANCEL", comment, isBuy, price, sl, tp, lot, -1, 0);
       return;
    }
+   
+   // LOG: attempt
+   LogTradeEvent("ATTEMPT", comment, isBuy, price, sl, tp, lot, -1, 0);
    
    bool result = false;
    if(isBuy)
@@ -1284,11 +1375,13 @@ void OpenPosition(bool isBuy, int slPips, int tpPips, string comment)
    if(result)
    {
       Print("SUCCESS: Order placed | Ticket: ", trade.ResultOrder());
+      LogTradeEvent("SUCCESS", comment, isBuy, price, sl, tp, lot, trade.ResultRetcode(), trade.ResultOrder());
       g_lastTradeTime = TimeCurrent();
    }
    else
    {
       Print("FAILED: Error ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
+      LogTradeEvent("FAILED", comment, isBuy, price, sl, tp, lot, trade.ResultRetcode(), 0);
    }
 }
 
