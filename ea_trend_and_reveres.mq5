@@ -21,8 +21,12 @@ const int ATR_AVERAGE_PERIOD = 20;
 const int MOMENTUM_ADX_BUFFER = 5;
 
 //--- Input Parameters
+input group "=== PROFILE SELECTION ==="
+input bool InpEnableScalping = true;        // TRUE=Scalping (RSI 7, SL 40, TP 70) | FALSE=Long-Term (RSI 14, SL 80, TP 200)
+
 input group "=== Indicator Settings ==="
-input int InpRSIPeriod = 14;              // OPTIMIZED: RSI 14 more stable
+input int InpRSIPeriod_Scalp = 7;          // Scalping: Fast RSI
+input int InpRSIPeriod_LongTerm = 14;      // Long-Term: Stable RSI
 input int InpRSIOversold = 30;
 input int InpRSIOverbought = 70;
 input bool InpUseRSIConfirmation = true;   // Wait for RSI reversal
@@ -35,14 +39,22 @@ input group "=== Volume Filter ==="
 input int InpVolumePeriod = 20;
 input double InpVolumeMultiplier = 1.0;        // RELAXED: 100% avg volume (was 1.2)
 
-input group "=== Risk Management - FIXED PIPS ==="
+input group "=== Risk Management - SCALPING ==="
 input double InpPositionSizePercent = 2.0;    // SAFE: 2% per trade (was 10%)
-input int InpStopLossPips = 50;               // OPTIMIZED: 15 gia vang / $1500 BTC
-input int InpTakeProfitPips = 100;            // IMPROVED: R:R = 1:2.5 (was 80)
-input int InpBreakevenPips = 60;              // IMPROVED: 1.5x SL (was 35)
+input int InpStopLossPips_Scalp = 40;         // Scalping: Tight SL (40 pips)
+input int InpTakeProfitPips_Scalp = 70;       // Scalping: TP 70 (R:R = 1:1.75)
+input int InpBreakevenPips_Scalp = 40;        // Scalping: Activate breakeven at +40
+input int InpTrailingActivatePips_Scalp = 40; // Scalping: Activate trailing at +40 pips
+input int InpTrailingDistancePips_Scalp = 20; // Scalping: Trail distance 20 pips
+
+input group "=== Risk Management - LONG-TERM ==="
+input int InpStopLossPips_LongTerm = 80;      // Long-Term: Wider SL (80 pips)
+input int InpTakeProfitPips_LongTerm = 200;   // Long-Term: TP 200 (R:R = 1:2.5)
+input int InpBreakevenPips_LongTerm = 100;    // Long-Term: Activate breakeven at +100
+input int InpTrailingActivatePips_LongTerm = 80;  // Long-Term: Activate trailing at +80 pips
+input int InpTrailingDistancePips_LongTerm = 50;  // Long-Term: Trail distance 50 pips
+
 input bool InpUseTrailingStop = true;         // Enable Trailing Stop
-input int InpTrailingActivatePips = 50;       // Activate trailing after this profit
-input int InpTrailingDistancePips = 30;       // Distance between price and trailing SL
 input bool InpUseAutoMaxPositions = true;
 input int InpMaxPositions = 3;
 input int InpMagicNumber = 123456;
@@ -53,8 +65,10 @@ input bool InpAllowTrendingSell = true;        // Trade SELL in downtrend
 input bool InpAllowSidewayTrade = true;        // NEW: Trade in sideways market
 
 input group "=== Sideways Trading Settings ==="
-input int InpSidewayStopLossPips = 50;         // IMPROVED: Tighter SL (was 100)
-input int InpSidewayTakeProfitPips = 100;      // TP stays same (R:R = 1:3 now!)
+input int InpSidewayStopLossPips_Scalp = 40;   // Scalping: Match trend SL
+input int InpSidewayTakeProfitPips_Scalp = 70; // Scalping: Match trend TP
+input int InpSidewayStopLossPips_LongTerm = 80;   // Long-Term: Match trend SL
+input int InpSidewayTakeProfitPips_LongTerm = 200; // Long-Term: Match trend TP
 input int InpSidewayRangePeriod = 50;          // Bars to calculate range on H4 timeframe
 input int InpSidewayMinRangePips = 200;        // Min range size to trade (skip small ranges)
 input int InpSidewayMaxDistanceToBoundary = 30; // Max distance from support/resistance (tighter)
@@ -62,8 +76,10 @@ input int InpSidewayMaxDistanceToBoundary = 30; // Max distance from support/res
 input group "=== Momentum Trading Settings ==="
 input bool InpAllowMomentumTrade = true;       // Enable Momentum (aggressive early entry)
 input bool InpUseMomentumConfirmation = false; // Momentum = no confirmation needed
-input int InpMomentumStopLossPips = 50;        // Same SL as trend
-input int InpMomentumTakeProfitPips = 120;     // Higher TP (R:R = 1:2.4)
+input int InpMomentumStopLossPips_Scalp = 40;   // Scalping: Tight SL
+input int InpMomentumTakeProfitPips_Scalp = 70; // Scalping: TP
+input int InpMomentumStopLossPips_LongTerm = 80; // Long-Term: Wider SL
+input int InpMomentumTakeProfitPips_LongTerm = 200; // Long-Term: TP
 input double InpMomentumVolumeMultiplier = 1.5; // HIGH volume required (was global 1.0)
 input double InpMomentumATRMultiplier = 1.2;    // HIGH ATR required (was global 0.5)
 
@@ -98,10 +114,22 @@ int g_handleEMASlow;
 int g_handleATR;
 int g_handleADX;
 
+//--- Profile helper functions
+int GetRSIPeriod() { return InpEnableScalping ? InpRSIPeriod_Scalp : InpRSIPeriod_LongTerm; }
+int GetStopLossPips() { return InpEnableScalping ? InpStopLossPips_Scalp : InpStopLossPips_LongTerm; }
+int GetTakeProfitPips() { return InpEnableScalping ? InpTakeProfitPips_Scalp : InpTakeProfitPips_LongTerm; }
+int GetBreakevenPips() { return InpEnableScalping ? InpBreakevenPips_Scalp : InpBreakevenPips_LongTerm; }
+int GetTrailingActivatePips() { return InpEnableScalping ? InpTrailingActivatePips_Scalp : InpTrailingActivatePips_LongTerm; }
+int GetTrailingDistancePips() { return InpEnableScalping ? InpTrailingDistancePips_Scalp : InpTrailingDistancePips_LongTerm; }
+int GetSidewayStopLossPips() { return InpEnableScalping ? InpSidewayStopLossPips_Scalp : InpSidewayStopLossPips_LongTerm; }
+int GetSidewayTakeProfitPips() { return InpEnableScalping ? InpSidewayTakeProfitPips_Scalp : InpSidewayTakeProfitPips_LongTerm; }
+int GetMomentumStopLossPips() { return InpEnableScalping ? InpMomentumStopLossPips_Scalp : InpMomentumStopLossPips_LongTerm; }
+int GetMomentumTakeProfitPips() { return InpEnableScalping ? InpMomentumTakeProfitPips_Scalp : InpMomentumTakeProfitPips_LongTerm; }
+
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   g_handleRSI = iRSI(_Symbol, PERIOD_M15, InpRSIPeriod, PRICE_CLOSE);
+   g_handleRSI = iRSI(_Symbol, PERIOD_M15, GetRSIPeriod(), PRICE_CLOSE);
    g_handleEMAFast = iMA(_Symbol, PERIOD_M15, InpEMAFast, 0, MODE_EMA, PRICE_CLOSE);
    g_handleEMASlow = iMA(_Symbol, PERIOD_M15, InpEMASlow, 0, MODE_EMA, PRICE_CLOSE);
    g_handleATR = iATR(_Symbol, PERIOD_M15, InpATRPeriod);
@@ -121,34 +149,34 @@ int OnInit()
    
    double pipValue = GetPipValue();
    
-   Print("====================================");
-   Print("EA INITIALIZED - OPTIMIZED VERSION 3.0");
-   Print("====================================");
+   Print("=====================================");
+   Print("EA INITIALIZED - PROFILE: ", InpEnableScalping ? "SCALPING" : "LONG-TERM");
+   Print("=====================================");
    Print("Symbol: ", _Symbol);
    Print("Pip Value: ", DoubleToString(pipValue, _Digits));
    Print("Position Size: ", InpPositionSizePercent, "%");
    Print("------------------------------------");
    Print("TRENDING MODE:");
-   Print("  SL: ", InpStopLossPips, " pips | TP: ", InpTakeProfitPips, " pips");
-   Print("  R:R = 1:", DoubleToString((double)InpTakeProfitPips/InpStopLossPips, 2));
+   Print("  SL: ", GetStopLossPips(), " pips | TP: ", GetTakeProfitPips(), " pips");
+   Print("  R:R = 1:", DoubleToString((double)GetTakeProfitPips()/GetStopLossPips(), 2));
    Print("  BUY Trend: ", InpAllowTrendingBuy ? "YES" : "NO");
    Print("  SELL Trend: ", InpAllowTrendingSell ? "YES" : "NO");
    Print("------------------------------------");
    Print("POSITION MANAGEMENT:");
-   Print("  Breakeven: ", InpBreakevenPips > 0 ? IntegerToString(InpBreakevenPips) + " pips" : "DISABLED");
+   Print("  Breakeven: ", GetBreakevenPips() > 0 ? IntegerToString(GetBreakevenPips()) + " pips" : "DISABLED");
    Print("  Trailing Stop: ", InpUseTrailingStop ? "ENABLED" : "DISABLED");
    if(InpUseTrailingStop)
    {
-      Print("    Activate at: ", InpTrailingActivatePips, " pips profit");
-      Print("    Trail distance: ", InpTrailingDistancePips, " pips");
+      Print("    Activate at: ", GetTrailingActivatePips(), " pips profit");
+      Print("    Trail distance: ", GetTrailingDistancePips(), " pips");
    }
    Print("------------------------------------");
    Print("SIDEWAYS MODE: ", InpAllowSidewayTrade ? "ENABLED" : "DISABLED");
    if(InpAllowSidewayTrade)
    {
       Print("  RSI Levels: Same as trending (30/70)");
-      Print("  SL: ", InpSidewayStopLossPips, " pips | TP: ", InpSidewayTakeProfitPips, " pips");
-      Print("  R:R = 1:", DoubleToString((double)InpSidewayTakeProfitPips/InpSidewayStopLossPips, 2));
+      Print("  SL: ", GetSidewayStopLossPips(), " pips | TP: ", GetSidewayTakeProfitPips(), " pips");
+      Print("  R:R = 1:", DoubleToString((double)GetSidewayTakeProfitPips()/GetSidewayStopLossPips(), 2));
       Print("  Range Filter: Min ", InpSidewayMinRangePips, " pips over ", InpSidewayRangePeriod, " H4 bars");
       Print("  Boundary Filter: Max ", InpSidewayMaxDistanceToBoundary, " pips from S/R");
    }
@@ -1003,7 +1031,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          if(InpEnableDetailedLogs)
             Print("✅ SIGNAL: TREND BUY (Uptrend + RSI Reversal + Bullish Engulfing)");
          LogSignalEvent("SIGNAL", "Trend_Buy", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-         OpenPosition(true, InpStopLossPips, InpTakeProfitPips, "Trend_Buy");
+         OpenPosition(true, GetStopLossPips(), GetTakeProfitPips(), "Trend_Buy");
          return;
       }
    }
@@ -1044,7 +1072,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          if(InpEnableDetailedLogs)
             Print("✅ SIGNAL: TREND SELL (Downtrend + RSI Reversal + Bearish Engulfing)");
          LogSignalEvent("SIGNAL", "Trend_Sell", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-         OpenPosition(false, InpStopLossPips, InpTakeProfitPips, "Trend_Sell");
+         OpenPosition(false, GetStopLossPips(), GetTakeProfitPips(), "Trend_Sell");
          return;
       }
    }
@@ -1065,7 +1093,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             Print("✅ ENTRY: Riding the strong momentum wave!");
          }
          LogSignalEvent("SIGNAL", "Momentum_Buy", "MomentumConfirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-         OpenPosition(true, InpMomentumStopLossPips, InpMomentumTakeProfitPips, "Momentum_Buy");
+         OpenPosition(true, GetMomentumStopLossPips(), GetMomentumTakeProfitPips(), "Momentum_Buy");
          return;
       }
       
@@ -1082,7 +1110,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             Print("✅ ENTRY: Riding the strong momentum wave!");
          }
          LogSignalEvent("SIGNAL", "Momentum_Sell", "MomentumConfirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-         OpenPosition(false, InpMomentumStopLossPips, InpMomentumTakeProfitPips, "Momentum_Sell");
+         OpenPosition(false, GetMomentumStopLossPips(), GetMomentumTakeProfitPips(), "Momentum_Sell");
          return;
       }
    }
@@ -1165,7 +1193,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          }
          
          LogSignalEvent("SIGNAL", "Sideway_Buy", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-         OpenPosition(true, InpSidewayStopLossPips, InpSidewayTakeProfitPips, "Sideway_Buy");
+         OpenPosition(true, GetSidewayStopLossPips(), GetSidewayTakeProfitPips(), "Sideway_Buy");
          return;
       }
       
@@ -1218,7 +1246,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          }
          
          LogSignalEvent("SIGNAL", "Sideway_Sell", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-         OpenPosition(false, InpSidewayStopLossPips, InpSidewayTakeProfitPips, "Sideway_Sell");
+         OpenPosition(false, GetSidewayStopLossPips(), GetSidewayTakeProfitPips(), "Sideway_Sell");
          return;
       }
    }
@@ -1424,9 +1452,9 @@ void ManageOpenPositions()
       string updateReason = "";
       
       // TRAILING STOP LOGIC (Priority 1)
-      if(InpUseTrailingStop && profitPips >= InpTrailingActivatePips)
+      if(InpUseTrailingStop && profitPips >= GetTrailingActivatePips())
       {
-         double trailingDistance = InpTrailingDistancePips * pipValue;
+         double trailingDistance = GetTrailingDistancePips() * pipValue;
          double potentialSL = 0;
          
          if(posType == POSITION_TYPE_BUY)
@@ -1453,7 +1481,7 @@ void ManageOpenPositions()
          }
       }
       // BREAKEVEN LOGIC (Priority 2 - only if trailing not active)
-      else if(InpBreakevenPips > 0 && profitPips >= InpBreakevenPips)
+      else if(GetBreakevenPips() > 0 && profitPips >= GetBreakevenPips())
       {
          if(posType == POSITION_TYPE_BUY && currentSL < openPrice)
          {
