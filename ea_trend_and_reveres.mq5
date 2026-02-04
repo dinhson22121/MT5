@@ -186,8 +186,8 @@ int OnInit()
    {
       Print("  Logic: UPTREND+RSI>70=BUY | DOWNTREND+RSI<30=SELL");
       Print("  Confirmation: ", InpUseMomentumConfirmation ? "YES (wait reversal)" : "NO (immediate)");
-      Print("  SL: ", InpMomentumStopLossPips, " pips | TP: ", InpMomentumTakeProfitPips, " pips");
-      Print("  R:R = 1:", DoubleToString((double)InpMomentumTakeProfitPips/InpMomentumStopLossPips, 2));
+      Print("  SL: ", GetMomentumStopLossPips(), " pips | TP: ", GetMomentumTakeProfitPips(), " pips");
+      Print("  R:R = 1:", DoubleToString((double)GetMomentumTakeProfitPips()/GetMomentumStopLossPips(), 2));
    }
    Print("------------------------------------");
    Print("FILTERS:");
@@ -218,7 +218,7 @@ int OnInit()
       Print("------------------------------------");
       Print("GOLD: 10 pips = 1 gia");
       Print("  Trend SL/TP: ", InpStopLossPips/10.0, "/", InpTakeProfitPips/10.0, " gia");
-      Print("  Momentum SL/TP: ", InpMomentumStopLossPips/10.0, "/", InpMomentumTakeProfitPips/10.0, " gia");
+      Print("  Momentum SL/TP: ", GetMomentumStopLossPips()/10.0, "/", GetMomentumTakeProfitPips()/10.0, " gia");
       Print("  Sideway SL/TP: ", InpSidewayStopLossPips/10.0, "/", InpSidewayTakeProfitPips/10.0, " gia");
    }
    
@@ -227,7 +227,7 @@ int OnInit()
       Print("------------------------------------");
       Print("BTC: 100 pips = $1000");
       Print("  Trend SL/TP: $", InpStopLossPips*10, "/$", InpTakeProfitPips*10);
-      Print("  Momentum SL/TP: $", InpMomentumStopLossPips*10, "/$", InpMomentumTakeProfitPips*10);
+      Print("  Momentum SL/TP: $", GetMomentumStopLossPips()*10, "/$", GetMomentumTakeProfitPips()*10);
       Print("  Sideway SL/TP: $", InpSidewayStopLossPips*10, "/$", InpSidewayTakeProfitPips*10);
    }
    
@@ -236,7 +236,7 @@ int OnInit()
       Print("------------------------------------");
       Print("US30 (DOW JONES): 1 pip = 1 point");
       Print("  Trend SL/TP: ", InpStopLossPips, " / ", InpTakeProfitPips, " points");
-      Print("  Momentum SL/TP: ", InpMomentumStopLossPips, " / ", InpMomentumTakeProfitPips, " points");
+      Print("  Momentum SL/TP: ", GetMomentumStopLossPips(), " / ", GetMomentumTakeProfitPips(), " points");
       Print("  Sideway SL/TP: ", InpSidewayStopLossPips, " / ", InpSidewayTakeProfitPips, " points");
       Print("  Example: 40 pips SL at 35000 = 34960");
    }
@@ -246,7 +246,7 @@ int OnInit()
       Print("------------------------------------");
       Print("NIKKEI 225: 1 pip = 1 point");
       Print("  Trend SL/TP: ", InpStopLossPips, " / ", InpTakeProfitPips, " points");
-      Print("  Momentum SL/TP: ", InpMomentumStopLossPips, " / ", InpMomentumTakeProfitPips, " points");
+      Print("  Momentum SL/TP: ", GetMomentumStopLossPips(), " / ", GetMomentumTakeProfitPips(), " points");
       Print("  Sideway SL/TP: ", InpSidewayStopLossPips, " / ", InpSidewayTakeProfitPips, " points");
       Print("  Example: 40 pips SL at 33000 = 32960");
    }
@@ -256,7 +256,7 @@ int OnInit()
       Print("------------------------------------");
       Print("USDJPY: 1 pip = 0.01 (or 0.001 for 3-digit)");
       Print("  Trend SL/TP: ", InpStopLossPips, " / ", InpTakeProfitPips, " pips");
-      Print("  Momentum SL/TP: ", InpMomentumStopLossPips, " / ", InpMomentumTakeProfitPips, " pips");
+      Print("  Momentum SL/TP: ", GetMomentumStopLossPips(), " / ", GetMomentumTakeProfitPips(), " pips");
       Print("  Sideway SL/TP: ", InpSidewayStopLossPips, " / ", InpSidewayTakeProfitPips, " pips");
       Print("  Example: Entry 150.00, SL 40 pips = 149.60, TP 100 pips = 151.00");
    }
@@ -266,7 +266,7 @@ int OnInit()
       Print("------------------------------------");
       Print("EURUSD: 1 pip = 0.0001 (5-digit broker) or 0.00001 (pipette)");
       Print("  Trend SL/TP: ", InpStopLossPips, " / ", InpTakeProfitPips, " pips");
-      Print("  Momentum SL/TP: ", InpMomentumStopLossPips, " / ", InpMomentumTakeProfitPips, " pips");
+      Print("  Momentum SL/TP: ", GetMomentumStopLossPips(), " / ", GetMomentumTakeProfitPips(), " pips");
       Print("  Sideway SL/TP: ", InpSidewayStopLossPips, " / ", InpSidewayTakeProfitPips, " pips");
       Print("  Example: Entry 1.0500, SL 40 pips = 1.0460, TP 100 pips = 1.0600");
    }
