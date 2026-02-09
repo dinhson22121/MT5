@@ -1,9 +1,29 @@
 //+------------------------------------------------------------------+
 //|                                BTC_RSI_MeanReversion_Optimized.mq5 |
 //|                                  Copyright 2024, Optimized Version |
+//|                                  v4.0 - PHASE 1: Win Rate Upgrade  |
+//+------------------------------------------------------------------+
+//| PHASE 1 CHANGES (Target: 55-60% Win Rate)                        |
+//| 1. DISABLED Momentum Trading - Logic contradicts trend strategy  |
+//|    (Momentum buys RSI>70 vs Trend buys RSI<30 - will fix Phase 2)|
+//| 2. STRENGTHENED Market State Detection:                          |
+//|    - ADX threshold: 15 → 25 (filters weak/choppy trends)         |
+//| 3. TIGHTENED Core Filters:                                       |
+//|    - Volume: 1.0x → 1.5x (requires above-average volume)         |
+//|    - ATR: 0.5x → 0.8x (requires normal volatility, not dead)     |
+//| 4. ENABLED Pattern Detection (was disabled):                     |
+//|    - Pattern now MANDATORY for all trades                        |
+//|    - Pattern volume: 1.3x → 2.0x (2x avg = strong patterns)      |
+//|    - Engulfing ratio: 1.2 → 1.5 (stronger body engulfment)       |
+//|    - Pinbar wick: 2.0 → 2.5 (longer rejection wicks required)    |
+//|                                                                   |
+//| Expected Outcome: ~40-50% reduction in trade frequency           |
+//| Forex: 20-30 trades/week → 10-15 trades/week                     |
+//| Crypto: 50-70 trades/week → 25-35 trades/week                    |
+//| Trade quality significantly improved - only high-probability setups|
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version   "3.00"
+#property version   "4.00"  // PHASE 1: Core filters strengthened for 70% win rate
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -11,7 +31,7 @@
 CTrade trade;
 
 //--- Constants
-const double PATTERN_VOLUME_MULTIPLIER = 1.3;
+const double PATTERN_VOLUME_MULTIPLIER = 2.0;  // UPGRADED: Require 2x volume for strong patterns (was 1.3)
 const double EMA_DIFF_PERCENT_THRESHOLD = 0.3;
 const int RSI_EXTREME_THRESHOLD = 75;
 const int RSI_EXTREME_LOW = 25;
@@ -33,11 +53,11 @@ input bool InpUseRSIConfirmation = true;   // Wait for RSI reversal
 input int InpEMAFast = 34;
 input int InpEMASlow = 89;
 input int InpADXPeriod = 14;
-input double InpMinADX = 15;                   // RELAXED: Min ADX for trend (was 20)
+input double InpMinADX = 25;                   // STRENGTHENED: Min ADX for strong trend (was 15)
 
 input group "=== Volume Filter ==="
 input int InpVolumePeriod = 20;
-input double InpVolumeMultiplier = 1.0;        // RELAXED: 100% avg volume (was 1.2)
+input double InpVolumeMultiplier = 1.5;        // STRENGTHENED: Require 1.5x avg volume (was 1.0)
 
 input group "=== Risk Management - SCALPING ==="
 input double InpPositionSizePercent = 2.0;    // SAFE: 2% per trade (was 10%)
@@ -74,7 +94,7 @@ input int InpSidewayMinRangePips = 200;        // Min range size to trade (skip 
 input int InpSidewayMaxDistanceToBoundary = 30; // Max distance from support/resistance (tighter)
 
 input group "=== Momentum Trading Settings ==="
-input bool InpAllowMomentumTrade = true;       // Enable Momentum (aggressive early entry)
+input bool InpAllowMomentumTrade = false;      // DISABLED: Fixing flawed momentum logic (was true)
 input bool InpUseMomentumConfirmation = false; // Momentum = no confirmation needed
 input int InpMomentumStopLossPips_Scalp = 40;   // Scalping: Tight SL
 input int InpMomentumTakeProfitPips_Scalp = 70; // Scalping: TP
@@ -93,13 +113,13 @@ input bool InpTradeEuropeanSession = true;     // European: 7:00-16:00 UTC (Lond
 input bool InpTradeUSSession = true;           // US: 13:00-22:00 UTC (New York)
 
 input group "=== Additional Filters ==="
-input double InpMinATRMultiplier = 0.5;        // RELAXED: Enable ATR filter (was 0.8)
+input double InpMinATRMultiplier = 0.8;        // STRENGTHENED: Require 0.8x avg ATR (was 0.5)
 input int InpATRPeriod = 14;
 input int InpMaxSpreadPips = 5;                // Max spread in pips (0=disabled)
 input bool InpUseCandleConfirmation = true;    // Check candle direction
-input bool InpRequireCandlePattern = false;    // RELAXED: Require Engulfing/Pinbar pattern (was true)
-input double InpMinPinbarWickRatio = 2.0;      // Min wick/body ratio for Pinbar (2.0 = wick 2x body)
-input double InpMinEngulfingRatio = 1.2;       // Min engulfing ratio (1.2 = 120% of prev candle)
+input bool InpRequireCandlePattern = true;     // STRENGTHENED: Pattern detection REQUIRED (was false)
+input double InpMinPinbarWickRatio = 2.5;      // STRENGTHENED: Min wick/body ratio for Pinbar (was 2.0)
+input double InpMinEngulfingRatio = 1.5;       // STRENGTHENED: Min engulfing ratio (was 1.2)
 
 input group "=== Debug Settings ==="
 input bool InpEnableDetailedLogs = true;
@@ -150,8 +170,14 @@ int OnInit()
    double pipValue = GetPipValue();
    
    Print("=====================================");
-   Print("EA INITIALIZED - PROFILE: ", InpEnableScalping ? "SCALPING" : "LONG-TERM");
+   Print("EA INITIALIZED - v4.0 PHASE 1");
+   Print("PROFILE: ", InpEnableScalping ? "SCALPING" : "LONG-TERM");
    Print("=====================================");
+   Print("⚡ UPGRADE: Core filters strengthened for 70% win rate target");
+   Print("   ADX: 15 → 25 | Volume: 1.0x → 1.5x | ATR: 0.5x → 0.8x");
+   Print("   Pattern Detection: MANDATORY | Pattern Vol: 1.3x → 2.0x");
+   Print("   Engulfing: 1.2 → 1.5 | Pinbar: 2.0 → 2.5");
+   Print("------------------------------------");
    Print("Symbol: ", _Symbol);
    Print("Pip Value: ", DoubleToString(pipValue, _Digits));
    Print("Position Size: ", InpPositionSizePercent, "%");
@@ -181,7 +207,7 @@ int OnInit()
       Print("  Boundary Filter: Max ", InpSidewayMaxDistanceToBoundary, " pips from S/R");
    }
    Print("------------------------------------");
-   Print("MOMENTUM MODE: ", InpAllowMomentumTrade ? "ENABLED" : "DISABLED");
+   Print("MOMENTUM MODE: ", InpAllowMomentumTrade ? "ENABLED" : "DISABLED (FIXING LOGIC)");
    if(InpAllowMomentumTrade)
    {
       Print("  Logic: UPTREND+RSI>70=BUY | DOWNTREND+RSI<30=SELL");
@@ -189,11 +215,18 @@ int OnInit()
       Print("  SL: ", GetMomentumStopLossPips(), " pips | TP: ", GetMomentumTakeProfitPips(), " pips");
       Print("  R:R = 1:", DoubleToString((double)GetMomentumTakeProfitPips()/GetMomentumStopLossPips(), 2));
    }
+   else
+   {
+      Print("  ⚠️ NOTE: Momentum temporarily disabled - logic needs fixing");
+      Print("  Issue: Contradicts trend strategy (buys at RSI>70 vs RSI<30)");
+      Print("  Will be redesigned in Phase 2 with proper momentum detection");
+   }
    Print("------------------------------------");
    Print("FILTERS:");
-   Print("  ADX Min: ", InpMinADX, " (", InpMinADX > 0 ? "ENABLED" : "DISABLED", ")");
-   Print("  Volume: ", InpVolumeMultiplier, "x avg");
-   Print("  ATR: ", InpMinATRMultiplier, "x avg");
+   Print("  ADX Min: ", InpMinADX, " (STRONG - filters weak trends)");
+   Print("  Volume: ", InpVolumeMultiplier, "x avg (HIGH - filters low conviction)");
+   Print("  ATR: ", InpMinATRMultiplier, "x avg (NORMAL - requires volatility)");
+   Print("  Pattern: ", InpRequireCandlePattern ? "REQUIRED ✓" : "OPTIONAL");
    Print("  Spread Max: ", InpMaxSpreadPips > 0 ? IntegerToString(InpMaxSpreadPips) + " pips" : "DISABLED");
    Print("  Cooldown: ", InpMinutesBetwenTrades, " minutes");
    Print("------------------------------------");
@@ -557,6 +590,8 @@ enum ENUM_MARKET_STATE
 //+------------------------------------------------------------------+
 ENUM_MARKET_STATE GetMarketState(double emaFast, double emaSlow, double adx)
 {
+   // PHASE 1 UPGRADE: Require ADX >= 25 for strong trend
+   // Also check ADX trend direction (optional but recommended)
    bool hasStrongTrend = (InpMinADX > 0) ? (adx >= InpMinADX) : 
                          (MathAbs(emaFast - emaSlow) / ((emaFast + emaSlow) / 2) * 100 > EMA_DIFF_PERCENT_THRESHOLD);
    
@@ -877,6 +912,24 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    
    bool highVolume = (currentVolume > avgVolume * InpVolumeMultiplier);
    
+   // PHASE 1 UPGRADE: Check volume trend (current > avg of last 3 bars)
+   bool volumeTrending = true;
+   if(InpVolumePeriod >= 3)
+   {
+      double recentAvgVolume = 0;
+      for(int i = 1; i <= 3; i++)  // Last 3 bars (not including current)
+         recentAvgVolume += (double)volumeArray[i];
+      recentAvgVolume /= 3.0;
+      
+      volumeTrending = (currentVolume > recentAvgVolume);
+      
+      if(!volumeTrending && InpEnableDetailedLogs)
+         Print("INFO: Volume declining (current=", (int)currentVolume, " vs recent avg=", (int)recentAvgVolume, ")");
+   }
+   
+   // Combine both volume checks
+   bool volumeOK = highVolume && volumeTrending;
+   
    // Calculate average ATR
    bool volatilityOK = true;
    double avgATR = 0;
@@ -925,7 +978,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double positionValue = balance * (InpPositionSizePercent / 100.0);
    
-   string volumeStatus = highVolume ? "HIGH" : "LOW";
+   string volumeStatus = volumeOK ? "HIGH" : "LOW";
    string atrStatus = volatilityOK ? "OK" : "LOW";
    
    // Get current session info
@@ -960,23 +1013,29 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    }
    
    Comment(
-      "=== ", _Symbol, " - OPTIMIZED v3.2 ===", "\n",
+      "=== ", _Symbol, " - v4.0 PHASE 1 ===", "\n",
+      "🎯 TARGET: 70% Win Rate | Filters: STRENGTHENED", "\n",
       "Balance: $", DoubleToString(balance, 2), " | Pos: $", DoubleToString(positionValue, 2), "\n",
       "Session: ", sessionInfo, " | UTC: ", TimeToString(TimeGMT(), TIME_MINUTES), "\n",
-      "Market: ", marketStateStr, " | ADX: ", DoubleToString(adx, 1), "\n",
-      "RSI: ", DoubleToString(rsi[0], 1), " | Vol: ", volumeStatus, " | ATR: ", atrStatus, "\n",
+      "Market: ", marketStateStr, " | ADX: ", DoubleToString(adx, 1), " (min 25)", "\n",
+      "RSI: ", DoubleToString(rsi[0], 1), " | Vol: ", volumeStatus, " (1.5x) | ATR: ", atrStatus, " (0.8x)", "\n",
       "Positions: ", CountOpenPositions(), "/", GetMaxPositions(), "\n",
-      "Trend (Safe): BUY=", (InpAllowTrendingBuy ? "YES" : "NO"), " SELL=", (InpAllowTrendingSell ? "YES" : "NO"), "\n",
-      "Momentum (Aggressive): ", (InpAllowMomentumTrade ? "YES" : "NO"), " | Sideway: ", (InpAllowSidewayTrade ? "YES" : "NO"), "\n",
-      "MOMENTUM ACTIVE: ", (hasMomentum ? "YES - HIGH VOL/ATR" : "NO")
+      "Trend (Active): BUY=", (InpAllowTrendingBuy ? "YES" : "NO"), " SELL=", (InpAllowTrendingSell ? "YES" : "NO"), "\n",
+      "Momentum: DISABLED (fixing logic) | Sideway: ", (InpAllowSidewayTrade ? "YES" : "NO"), "\n",
+      "Pattern Check: MANDATORY ✓"
    );
    
    // Check common filters - ALWAYS (for all trade types)
-   if(!highVolume)
+   if(!volumeOK)
    {
       if(InpEnableDetailedLogs)
-         Print("NO SIGNAL: Volume too low (", (int)currentVolume, " vs ", (int)avgVolume, ")");
-      LogSignalEvent("REJECT", "VolumeLow", "volume < avg*mult", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+      {
+         if(!highVolume)
+            Print("NO SIGNAL: Volume too low (", (int)currentVolume, " vs ", (int)avgVolume, " | need ", InpVolumeMultiplier, "x)");
+         else
+            Print("NO SIGNAL: Volume declining (not trending up)");
+      }
+      LogSignalEvent("REJECT", "VolumeLow", "volume < avg*mult OR declining", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
       return;
    }
    

@@ -1,0 +1,105 @@
+; EA v4.0 Phase 1 - CONSERVATIVE Profile
+; Target: 60%+ Win Rate | 5-8 Trades/Week
+; Risk: LOW | Best for: Testing Phase 1 effectiveness
+; Recommended for: All symbols during initial testing
+;
+; FEATURES:
+; - Strictest filters (very selective)
+; - Only strongest setups (Tier 1 quality)
+; - Lower trade frequency
+; - Higher win rate expected
+;
+; HOW TO USE:
+; 1. Right-click EA on chart → Properties
+; 2. Go to "Inputs" tab
+; 3. Click "Load" button
+; 4. Select this file (Conservative_Phase1.set)
+; 5. Click OK
+;
+InpEnableScalping=true
+;
+; === PHASE 1 CORE FILTERS (VERY STRICT) ===
+InpMinADX=27.0
+InpVolumeMultiplier=1.6
+InpMinATRMultiplier=0.9
+;
+; === PATTERN DETECTION (MANDATORY - STRONGER) ===
+InpRequireCandlePattern=true
+InpMinEngulfingRatio=1.6
+InpMinPinbarWickRatio=2.7
+;
+; === INDICATOR SETTINGS ===
+InpRSIPeriod_Scalp=7
+InpRSIPeriod_LongTerm=14
+InpRSIOversold=30
+InpRSIOverbought=70
+InpUseRSIConfirmation=true
+InpEMAFast=34
+InpEMASlow=89
+InpADXPeriod=14
+;
+; === VOLUME FILTER ===
+InpVolumePeriod=20
+;
+; === RISK MANAGEMENT - SCALPING (Conservative) ===
+InpPositionSizePercent=1.5
+InpStopLossPips_Scalp=40
+InpTakeProfitPips_Scalp=80
+InpBreakevenPips_Scalp=35
+InpTrailingActivatePips_Scalp=45
+InpTrailingDistancePips_Scalp=25
+;
+; === RISK MANAGEMENT - LONG-TERM ===
+InpStopLossPips_LongTerm=80
+InpTakeProfitPips_LongTerm=220
+InpBreakevenPips_LongTerm=90
+InpTrailingActivatePips_LongTerm=90
+InpTrailingDistancePips_LongTerm=55
+;
+InpUseTrailingStop=true
+InpUseAutoMaxPositions=true
+InpMaxPositions=2
+InpMagicNumber=123456
+;
+; === TRADING MODES (Trend only) ===
+InpAllowTrendingBuy=true
+InpAllowTrendingSell=true
+InpAllowSidewayTrade=false
+;
+; === SIDEWAYS TRADING SETTINGS ===
+InpSidewayStopLossPips_Scalp=40
+InpSidewayTakeProfitPips_Scalp=70
+InpSidewayStopLossPips_LongTerm=80
+InpSidewayTakeProfitPips_LongTerm=200
+InpSidewayRangePeriod=50
+InpSidewayMinRangePips=250
+InpSidewayMaxDistanceToBoundary=25
+;
+; === MOMENTUM TRADING (PHASE 1: DISABLED) ===
+InpAllowMomentumTrade=false
+InpUseMomentumConfirmation=false
+InpMomentumStopLossPips_Scalp=40
+InpMomentumTakeProfitPips_Scalp=70
+InpMomentumStopLossPips_LongTerm=80
+InpMomentumTakeProfitPips_LongTerm=200
+InpMomentumVolumeMultiplier=1.5
+InpMomentumATRMultiplier=1.2
+;
+; === TRADING RULES (Longer cooldown) ===
+InpMinutesBetwenTrades=60
+InpCooldownSeconds=3600
+InpAllowOnCurrentBar=false
+InpUseTimeFilter=true
+InpTradeAsianSession=false
+InpTradeEuropeanSession=true
+InpTradeUSSession=true
+;
+; === ADDITIONAL FILTERS (Strict) ===
+InpATRPeriod=14
+InpMaxSpreadPips=4
+InpUseCandleConfirmation=true
+;
+; === DEBUG SETTINGS ===
+InpEnableDetailedLogs=true
+InpEnableFileLogging=true
+InpDebugLogFileName=EA_Conservative_DebugLog.csv
