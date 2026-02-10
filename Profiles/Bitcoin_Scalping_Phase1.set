@@ -36,7 +36,8 @@ InpADXPeriod=14
 InpVolumePeriod=20
 ;
 ; === RISK MANAGEMENT - SCALPING (Lower risk for crypto) ===
-InpPositionSizePercent=1.5
+InpPositionSizePercent=1.0
+InpMaxLotSize=0.10
 InpStopLossPips_Scalp=40
 InpTakeProfitPips_Scalp=70
 InpBreakevenPips_Scalp=40

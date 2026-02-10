@@ -43,8 +43,9 @@ InpADXPeriod=14
 ; === VOLUME FILTER ===
 InpVolumePeriod=20
 ;
-; === RISK MANAGEMENT - SCALPING (Aggressive) ===
-InpPositionSizePercent=2.0
+; === RISK MANAGEMENT - SCALPING (Moderate-Aggressive) ===
+InpPositionSizePercent=1.5
+InpMaxLotSize=1.00
 InpStopLossPips_Scalp=40
 InpTakeProfitPips_Scalp=70
 InpBreakevenPips_Scalp=40

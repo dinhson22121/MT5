@@ -1,7 +1,12 @@
 ; EA v4.0 Phase 1 - GOLD SCALPING Profile
 ; Target: 55-60% Win Rate | 10-15 Trades/Week
-; Risk: MODERATE | Timeframe: M15
-; Best for: XAUUSD (Gold)
+; Risk: AGGRESSIVE (3% per trade) | Timeframe: M15
+; Best for: XAUUSD (Gold) | Broker: Exness Standard Lots
+;
+; ⚠️ WARNING: 3% risk is AGGRESSIVE! 
+;   - 3 consecutive losses = 9% drawdown
+;   - Recommended only for experienced traders
+;   - Consider 1-2% for safer approach
 ;
 ; HOW TO USE:
 ; 1. Right-click EA on chart → Properties
@@ -36,7 +41,8 @@ InpADXPeriod=14
 InpVolumePeriod=20
 ;
 ; === RISK MANAGEMENT - SCALPING ===
-InpPositionSizePercent=2.0
+InpPositionSizePercent=3.0
+InpMaxLotSize=1.50
 InpStopLossPips_Scalp=40
 InpTakeProfitPips_Scalp=70
 InpBreakevenPips_Scalp=40

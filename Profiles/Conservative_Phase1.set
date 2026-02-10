@@ -42,7 +42,8 @@ InpADXPeriod=14
 InpVolumePeriod=20
 ;
 ; === RISK MANAGEMENT - SCALPING (Conservative) ===
-InpPositionSizePercent=1.5
+InpPositionSizePercent=0.50
+InpMaxLotSize=0.30
 InpStopLossPips_Scalp=40
 InpTakeProfitPips_Scalp=80
 InpBreakevenPips_Scalp=35

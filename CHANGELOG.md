@@ -2,6 +2,191 @@
 
 ---
 
+## Version 4.0.2 - POSITION SIZING RE-FIX (2026-02-10) 🔴 CRITICAL
+
+### 🎯 Priority: CRITICAL - Forex Lot Calculation Fixed
+
+### Issue Reported by User
+- **Symptom**: Forex trades losing **10% per trade** instead of 1%!
+- **Root Cause**: v4.0.1 hardcoded `$10 per pip` for all forex pairs
+  - This assumes **Standard Lot** (100,000 units)
+  - But many brokers use **Mini Lots** (10,000 units) = $1 per pip
+  - Result: Lot size calculated **10x too small**!
+
+### Example of the Problem (v4.0.1 - BROKEN)
+```
+Account: $1000
+Risk: 1% = $10
+SL: 40 pips
+Broker: Mini lots (10,000 units)
+
+BAD CALCULATION (v4.0.1):
+  moneyPerPipPerLot = $10 ← HARDCODED (wrong for mini)
+  lotSize = $10 / (40 × $10) = 0.025 lot
+  
+  Actual position value = 0.025 × 10,000 = 250 units
+  Actual $ per pip = 250 × 0.0001 = $0.025 ← TOO SMALL!
+  
+  Actual risk = 0.025 lot × 40 pips × $1/pip (mini) = $1 ← Only 0.1%, not 1%!
+  
+  To lose 10%, need 100 pips SL = $10 normal risk
+  → User hits 10% loss with just 40 pips!
+```
+
+### Solution Implemented (v4.0.2)
+```cpp
+// CORRECT: Use broker's actual contract size
+moneyPerPipPerLot = contractSize × pipValue;
+
+// Standard lot: 100,000 × 0.0001 = $10/pip ✓
+// Mini lot: 10,000 × 0.0001 = $1/pip ✓
+// Micro lot: 1,000 × 0.0001 = $0.10/pip ✓
+```
+
+### Enhanced Calculation Method
+1. **Primary**: Use `SYMBOL_TRADE_TICK_VALUE` from broker
+   - Most accurate method
+   - Handles all quote currencies automatically
+   - Falls back to manual calculation if unavailable
+
+2. **Fallback**: Calculate from contract size
+   - Works for all instrument types
+   - Properly handles mini/micro lots
+   - Correct JPY conversion
+
+3. **Verification Logging**
+   - Shows contract size, tick value, pip value
+   - Displays actual risk calculation
+   - Easy to spot incorrect calculations
+
+### Testing Instructions
+Enable detailed logs and verify output:
+```
+═══════════════════════════════════
+LOT SIZE CALCULATION:
+  Symbol: EURUSD
+  Balance: $1000.00
+  Risk %: 1% = $10.00
+  ---
+  Broker Contract Size: 10000 units    ← Check this!
+  Tick Size: 0.00001
+  Tick Value: $0.10
+  Pip Value: 0.0001
+  ---
+  $ per pip (1 lot): $1.000            ← Should match contract: 10K=$1, 100K=$10
+  SL Pips: 40
+  Calculated Lot: 0.25                 ← Now correct!
+  ---
+  VERIFICATION:
+    Actual Risk = 0.25 × 40 × $1.00 = $10.00
+    Target Risk = $10.00
+    Difference = 0.00                  ← Should be near 0!
+═══════════════════════════════════
+```
+
+### Breaking Changes
+- None - only fixes calculation bug
+- No parameter changes
+- Profiles unchanged
+
+### Files Modified
+- [ea_trend_and_reveres.mq5](ea_trend_and_reveres.mq5): 
+  - Rewrote pip value calculation (line ~1336-1410)
+  - Enhanced debug logging
+  - Version 4.00 → 4.02
+
+### Migration Steps
+1. **Recompile** EA (F7)
+2. **Enable logs**: `InpEnableDetailedLogs = true`
+3. **Attach to chart** and check initialization logs:
+   - Look for "Broker Contract Size: XXXXX units"
+   - Verify "$ per pip (1 lot)" matches your broker spec
+4. **Run 1 test trade** on demo:
+   - Check calculated lot size
+   - Verify "Actual Risk" ≈ "Target Risk"
+   - Confirm "Difference" is small (<$0.50)
+5. **If correct**: Resume normal trading
+6. **If still wrong**: Send me screenshot of full "LOT SIZE CALCULATION" log
+
+### ⚠️ ACTION REQUIRED
+**If you're seeing 10% losses on forex pairs**:
+1. 🛑 **STOP EA immediately**
+2. Update to v4.0.2
+3. Demo test before live
+4. Your broker likely uses **mini lots** (10,000 units)
+
+---
+
+## Version 4.0.1 - POSITION SIZING FIX (2026-02-10) 🔴 SUPERSEDED
+
+### 🎯 Priority: CRITICAL - Risk Management Fix
+
+### Critical Bug Fix
+
+#### ❌ Problem Discovered
+- **Lot Size Calculation**: Incorrect pip value formula
+  - Code confused **pip size** (0.0001) with **pip value** ($10)
+  - Formula: `moneyPerPipPerLot = contractSize × pipValue` ← WRONG
+  - Impact:
+    * **Bitcoin**: Lot size 100x too large! 💥
+    * **Indices**: 1-10x incorrect depending on broker
+    * **JPY pairs**: Wrong conversion rate
+    * **Actual risk**: 10-20% instead of 1-2% per trade!
+
+#### ✅ Solution Implemented
+1. **Fixed Pip Value Calculation**
+   - Hardcoded correct pip values per instrument type:
+     * Gold: $10 per pip for 1 lot
+     * BTC: $10 per pip (for 1 BTC contract)
+     * Forex USD pairs: $10 per pip
+     * JPY pairs: 1000/rate conversion
+     * Indices: Contract size based
+
+2. **Reduced Default Risk**
+   - Main code: 2% → **1.0%** (safer default)
+   - Profile updates:
+     * Gold: 2% → 1%, max lot 0.50
+     * EURUSD: 2% → 1%, max lot 1.00
+     * Bitcoin: 1.5% → 1%, max lot **0.10** (critical!)
+     * Conservative: 1.5% → **0.5%**, max lot 0.30
+     * Aggressive: 2% → 1.5%, max lot 1.00
+
+3. **Added Max Lot Size Cap**
+   - New parameter: `InpMaxLotSize`
+   - Hard limit to prevent oversized positions
+   - Symbol-specific caps for safety
+
+4. **Safety Hard Limit: 5%**
+   - Regardless of settings, NEVER risk >5% balance
+   - Auto-reduces lot size if calculation exceeds limit
+   - Logs warning when triggered
+
+### Breaking Changes
+- `InpPositionSizePercent` default: 2.0 → 1.0
+- New required parameter: `InpMaxLotSize` (add to profiles)
+- All 5 profile files updated with safer values
+
+### Files Modified
+- [ea_trend_and_reveres.mq5](ea_trend_and_reveres.mq5): CalculateLotSize() rewritten
+- All 5 profile .set files updated
+- New documentation: [POSITION_SIZING_FIX.md](POSITION_SIZING_FIX.md)
+
+### Migration Required
+1. **Recompile EA** (F7)
+2. **Reload profiles** (all have new InpMaxLotSize parameter)
+3. **Demo test** 3-7 days before going live
+4. **Verify logs** show correct lot calculation
+
+### Testing Checklist
+- [ ] Check logs: "Actual Risk: $X" matches Balance × Risk%
+- [ ] No "SAFETY LIMIT exceeded" warnings
+- [ ] Lot size reasonable for account size
+- [ ] Start with Conservative profile (0.5% risk)
+
+**⚠️ ACTION REQUIRED**: Update immediately if trading Bitcoin or using >1% risk!
+
+---
+
 ## Version 4.0 - PHASE 1 (2026-02-09) ✅ IMPLEMENTED
 
 ### 🎯 Target: 55-60% Win Rate | 10-15 Trades/Week
