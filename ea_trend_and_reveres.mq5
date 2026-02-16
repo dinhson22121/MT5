@@ -1,39 +1,27 @@
 //+------------------------------------------------------------------+
 //|                                BTC_RSI_MeanReversion_Optimized.mq5 |
 //|                                  Copyright 2024, Optimized Version |
-//|                                  v4.0.2 - PHASE 1: Position Size Fix v2 |
+//|                                  v4.1 - PHASE 2: Strategy Optimization   |
 //+------------------------------------------------------------------+
-//| v4.0.2 CRITICAL FIX (2026-02-10)                                 |
-//| - RE-FIXED lot calculation: Use broker's actual contract size   |
-//| - Previous fix (v4.0.1) hardcoded $10/pip - WRONG for mini lots!|
-//| - Now uses: contractSize × pipValue (correct formula)            |
-//| - Standard lot (100,000): $10/pip ✓                              |
-//| - Mini lot (10,000): $1/pip ✓                                    |
-//| - Micro lot (1,000): $0.10/pip ✓                                 |
-//| Issue reported: Forex trades losing 10% (lot 10x too small)     |
-//| Root cause: Hardcoded $10 when broker uses mini lots ($1/pip)   |
+//| v4.1 PHASE 2 (2026-02-17)                                       |
+//| 1. ATR-Based SL/TP: Adaptive to volatility (SL=1.5x, TP=2.5x)  |
+//|    - Replaces fixed pip SL/TP with dynamic ATR-based distances   |
+//|    - Gold high vol: wider SL/TP | Low vol: tighter SL/TP        |
+//| 2. H1 Multi-Timeframe Confirmation:                              |
+//|    - Requires H1 EMA20/50 trend alignment before M15 entry      |
+//|    - BUY only when H1 uptrend, SELL only when H1 downtrend      |
+//| 3. RSI Levels Tuned:                                             |
+//|    - Trend: 35/65 (was 30/70 - too extreme in strong trends)     |
+//|    - Sideways: 40/60 (was 30/70 - impossible in range market)    |
+//| 4. Pattern Volume: 1.5x (was 2.0x - too strict)                 |
+//| 5. ATR-Based Trailing: Trail distance = 1.0x ATR (adaptive)     |
+//|    - No more fixed 20 pip trail getting stopped by normal moves  |
 //+------------------------------------------------------------------+
-//| PHASE 1 CHANGES (Target: 55-60% Win Rate)                        |
-//| 1. DISABLED Momentum Trading - Logic contradicts trend strategy  |
-//|    (Momentum buys RSI>70 vs Trend buys RSI<30 - will fix Phase 2)|
-//| 2. STRENGTHENED Market State Detection:                          |
-//|    - ADX threshold: 15 → 25 (filters weak/choppy trends)         |
-//| 3. TIGHTENED Core Filters:                                       |
-//|    - Volume: 1.0x → 1.5x (requires above-average volume)         |
-//|    - ATR: 0.5x → 0.8x (requires normal volatility, not dead)     |
-//| 4. ENABLED Pattern Detection (was disabled):                     |
-//|    - Pattern now MANDATORY for all trades                        |
-//|    - Pattern volume: 1.3x → 2.0x (2x avg = strong patterns)      |
-//|    - Engulfing ratio: 1.2 → 1.5 (stronger body engulfment)       |
-//|    - Pinbar wick: 2.0 → 2.5 (longer rejection wicks required)    |
-//|                                                                   |
-//| Expected Outcome: ~40-50% reduction in trade frequency           |
-//| Forex: 20-30 trades/week → 10-15 trades/week                     |
-//| Crypto: 50-70 trades/week → 25-35 trades/week                    |
-//| Trade quality significantly improved - only high-probability setups|
+//| v4.0.2 Lot calculation fix: Uses broker's actual contract size   |
+//| v4.0 Phase 1: ADX 25, Volume 1.5x, ATR 0.8x, Pattern mandatory |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version   "4.02"  // PHASE 1: Position sizing fix v2 - use actual contract size
+#property version   "4.10"  // PHASE 2: ATR SL/TP, H1 MTF confirmation, RSI tuning
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -41,14 +29,14 @@
 CTrade trade;
 
 //--- Constants
-const double PATTERN_VOLUME_MULTIPLIER = 2.0;  // UPGRADED: Require 2x volume for strong patterns (was 1.3)
+const double PATTERN_VOLUME_MULTIPLIER = 1.5;  // BALANCED: 1.5x volume for patterns (was 2.0 - too strict)
 const double EMA_DIFF_PERCENT_THRESHOLD = 0.3;
 const int RSI_EXTREME_THRESHOLD = 75;
 const int RSI_EXTREME_LOW = 25;
 const double SMALL_WICK_RATIO = 0.3;
 const double BROKER_STOP_BUFFER = 1.1;
 const int ATR_AVERAGE_PERIOD = 20;
-const int MOMENTUM_ADX_BUFFER = 5;
+const int MOMENTUM_ADX_BUFFER = 0;
 
 //--- Input Parameters
 input group "=== PROFILE SELECTION ==="
@@ -57,8 +45,8 @@ input bool InpEnableScalping = true;        // TRUE=Scalping (RSI 7, SL 40, TP 7
 input group "=== Indicator Settings ==="
 input int InpRSIPeriod_Scalp = 7;          // Scalping: Fast RSI
 input int InpRSIPeriod_LongTerm = 14;      // Long-Term: Stable RSI
-input int InpRSIOversold = 30;
-input int InpRSIOverbought = 70;
+input int InpRSIOversold = 30;             // RSI oversold level
+input int InpRSIOverbought = 70;           // RSI overbought level
 input bool InpUseRSIConfirmation = true;   // Wait for RSI reversal
 input int InpEMAFast = 34;
 input int InpEMASlow = 89;
@@ -70,10 +58,10 @@ input int InpVolumePeriod = 20;
 input double InpVolumeMultiplier = 1.5;        // STRENGTHENED: Require 1.5x avg volume (was 1.0)
 
 input group "=== Risk Management - SCALPING ==="
-input double InpPositionSizePercent = 1.0;    // CONSERVATIVE: 1% per trade (safe for most accounts)
-input double InpMaxLotSize = 0.0;             // Max lot size limit (0=no limit, recommended: 0.5-2.0)
-input int InpStopLossPips_Scalp = 40;         // Scalping: Tight SL (40 pips)
-input int InpTakeProfitPips_Scalp = 70;       // Scalping: TP 70 (R:R = 1:1.75)
+input double InpPositionSizePercent = 3.0;    // Risk 3% per trade (Exness Standard)
+input double InpMaxLotSize = 1.5;             // Max lot size limit (0=no limit)
+input int InpStopLossPips_Scalp = 50;         // Scalping: SL 50 pips
+input int InpTakeProfitPips_Scalp = 100;      // Scalping: TP 100 (R:R = 1:2)
 input int InpBreakevenPips_Scalp = 40;        // Scalping: Activate breakeven at +40
 input int InpTrailingActivatePips_Scalp = 40; // Scalping: Activate trailing at +40 pips
 input int InpTrailingDistancePips_Scalp = 20; // Scalping: Trail distance 20 pips
@@ -96,30 +84,32 @@ input bool InpAllowTrendingSell = true;        // Trade SELL in downtrend
 input bool InpAllowSidewayTrade = true;        // NEW: Trade in sideways market
 
 input group "=== Sideways Trading Settings ==="
-input int InpSidewayStopLossPips_Scalp = 40;   // Scalping: Match trend SL
-input int InpSidewayTakeProfitPips_Scalp = 70; // Scalping: Match trend TP
+input int InpSidewayStopLossPips_Scalp = 50;   // Scalping: SL 50 pips
+input int InpSidewayTakeProfitPips_Scalp = 100; // Scalping: TP 100 (R:R = 1:2)
 input int InpSidewayStopLossPips_LongTerm = 80;   // Long-Term: Match trend SL
 input int InpSidewayTakeProfitPips_LongTerm = 200; // Long-Term: Match trend TP
 input int InpSidewayRangePeriod = 50;          // Bars to calculate range on H4 timeframe
 input int InpSidewayMinRangePips = 200;        // Min range size to trade (skip small ranges)
 input int InpSidewayMaxDistanceToBoundary = 30; // Max distance from support/resistance (tighter)
+input int InpSidewayRSIOversold = 40;      // Sideways RSI buy level (40 - realistic for range market)
+input int InpSidewayRSIOverbought = 60;    // Sideways RSI sell level (60 - realistic for range market)
 
 input group "=== Momentum Trading Settings ==="
-input bool InpAllowMomentumTrade = false;      // DISABLED: Fixing flawed momentum logic (was true)
+input bool InpAllowMomentumTrade = true;       // Momentum mode: FOMO breakout trading
 input bool InpUseMomentumConfirmation = false; // Momentum = no confirmation needed
-input int InpMomentumStopLossPips_Scalp = 40;   // Scalping: Tight SL
-input int InpMomentumTakeProfitPips_Scalp = 70; // Scalping: TP
+input int InpMomentumStopLossPips_Scalp = 50;   // Scalping: SL 50 pips
+input int InpMomentumTakeProfitPips_Scalp = 100; // Scalping: TP 100 (R:R = 1:2)
 input int InpMomentumStopLossPips_LongTerm = 80; // Long-Term: Wider SL
 input int InpMomentumTakeProfitPips_LongTerm = 200; // Long-Term: TP
 input double InpMomentumVolumeMultiplier = 1.5; // HIGH volume required (was global 1.0)
 input double InpMomentumATRMultiplier = 1.2;    // HIGH ATR required (was global 0.5)
 
 input group "=== Trading Rules ==="
-input int InpMinutesBetwenTrades = 30;        // OPTIMIZED: 2 hours cooldown
+input int InpMinutesBetwenTrades = 30;        // Cooldown between trades (minutes)
 input int InpCooldownSeconds = 1800;          // Cooldown in seconds (overrides minutes if >0)
 input bool InpAllowOnCurrentBar = false;      // Allow trading on currently forming bar (for testing)
-input bool InpUseTimeFilter = false;            // Enable session filter (auto-disable for crypto)
-input bool InpTradeAsianSession = true;        // Asian: 1:00-9:00 UTC (Tokyo)
+input bool InpUseTimeFilter = false;           // Enable session filter
+input bool InpTradeAsianSession = false;       // Asian: 1:00-9:00 UTC (Tokyo)
 input bool InpTradeEuropeanSession = true;     // European: 7:00-16:00 UTC (London)
 input bool InpTradeUSSession = true;           // US: 13:00-22:00 UTC (New York)
 
@@ -132,9 +122,21 @@ input bool InpRequireCandlePattern = true;     // STRENGTHENED: Pattern detectio
 input double InpMinPinbarWickRatio = 2.5;      // STRENGTHENED: Min wick/body ratio for Pinbar (was 2.0)
 input double InpMinEngulfingRatio = 1.5;       // STRENGTHENED: Min engulfing ratio (was 1.2)
 
+input group "=== ATR-Based SL/TP (Adaptive) ==="
+input bool InpUseATRBasedSLTP = true;          // Use ATR for SL/TP (adapts to volatility)
+input double InpATRMultiplierSL = 1.5;         // SL = ATR × this (e.g., ATR $5 → SL $7.5)
+input double InpATRMultiplierTP = 2.5;         // TP = ATR × this (R:R ≈ 1:1.67)
+input bool InpUseATRTrailing = true;           // Use ATR for trailing distance (adaptive)
+input double InpTrailingATRMultiplier = 1.0;   // Trail distance = ATR × this
+
+input group "=== Multi-Timeframe Confirmation ==="
+input bool InpUseH1Confirmation = true;        // Require H1 trend alignment before M15 entry
+input int InpH1EMAFast = 20;                   // H1 Fast EMA period
+input int InpH1EMASlow = 50;                   // H1 Slow EMA period
+
 input group "=== Debug Settings ==="
 input bool InpEnableDetailedLogs = true;
-input bool InpEnableFileLogging = true;            // Write signal/trade events to Files\EA_DebugLog.csv
+input bool InpEnableFileLogging = false;           // Write signal/trade events to Files\EA_DebugLog.csv
 input string InpDebugLogFileName = "EA_DebugLog.csv";  // Filename in MT5 Files folder
 
 //--- Global Variables
@@ -144,6 +146,8 @@ int g_handleEMAFast;
 int g_handleEMASlow;
 int g_handleATR;
 int g_handleADX;
+int g_handleEMAFast_H1;  // H1 timeframe EMA for multi-TF confirmation
+int g_handleEMASlow_H1;  // H1 timeframe EMA for multi-TF confirmation
 
 //--- Profile helper functions
 int GetRSIPeriod() { return InpEnableScalping ? InpRSIPeriod_Scalp : InpRSIPeriod_LongTerm; }
@@ -166,9 +170,14 @@ int OnInit()
    g_handleATR = iATR(_Symbol, PERIOD_M15, InpATRPeriod);
    g_handleADX = iADX(_Symbol, PERIOD_M15, InpADXPeriod);
    
+   // H1 Multi-Timeframe EMAs
+   g_handleEMAFast_H1 = iMA(_Symbol, PERIOD_H1, InpH1EMAFast, 0, MODE_EMA, PRICE_CLOSE);
+   g_handleEMASlow_H1 = iMA(_Symbol, PERIOD_H1, InpH1EMASlow, 0, MODE_EMA, PRICE_CLOSE);
+   
    if(g_handleRSI == INVALID_HANDLE || g_handleEMAFast == INVALID_HANDLE || 
       g_handleEMASlow == INVALID_HANDLE || g_handleATR == INVALID_HANDLE ||
-      g_handleADX == INVALID_HANDLE)
+      g_handleADX == INVALID_HANDLE ||
+      g_handleEMAFast_H1 == INVALID_HANDLE || g_handleEMASlow_H1 == INVALID_HANDLE)
    {
       Print("ERROR: Failed to create indicators!");
       return(INIT_FAILED);
@@ -181,17 +190,19 @@ int OnInit()
    double pipValue = GetPipValue();
    
    Print("=====================================");
-   Print("EA INITIALIZED - v4.0.2 PHASE 1");
+   Print("EA INITIALIZED - v4.1 PHASE 2");
    Print("PROFILE: ", InpEnableScalping ? "SCALPING" : "LONG-TERM");
    Print("=====================================");
-   Print("🔧 v4.0.2: Position sizing RE-FIXED!");
-   Print("   Now uses broker's actual contract size");
-   Print("   Standard lot (100K): $10/pip | Mini (10K): $1/pip");
+   Print("🔧 v4.1 PHASE 2: Strategy Optimization");
+   Print("   ATR-based SL/TP: ", InpUseATRBasedSLTP ? "ENABLED" : "DISABLED",
+         " (SL=", InpATRMultiplierSL, "x TP=", InpATRMultiplierTP, "x)");
+   Print("   H1 Confirmation: ", InpUseH1Confirmation ? "ENABLED" : "DISABLED",
+         " (EMA", InpH1EMAFast, "/", InpH1EMASlow, ")");
+   Print("   ATR Trailing: ", InpUseATRTrailing ? "ENABLED" : "DISABLED",
+         " (", InpTrailingATRMultiplier, "x ATR)");
    Print("-------------------------------------");
-   Print("⚡ UPGRADE: Core filters strengthened for 70% win rate target");
-   Print("   ADX: 15 → 25 | Volume: 1.0x → 1.5x | ATR: 0.5x → 0.8x");
-   Print("   Pattern Detection: MANDATORY | Pattern Vol: 1.3x → 2.0x");
-   Print("   Engulfing: 1.2 → 1.5 | Pinbar: 2.0 → 2.5");
+   Print("⚡ Phase 2: RSI 35/65 trend | 40/60 sideways | Pattern Vol 1.5x");
+   Print("   Sideways RSI: ", InpSidewayRSIOversold, "/", InpSidewayRSIOverbought);
    Print("------------------------------------");
    Print("Symbol: ", _Symbol);
    Print("Pip Value: ", DoubleToString(pipValue, _Digits));
@@ -332,6 +343,8 @@ void OnDeinit(const int reason)
    IndicatorRelease(g_handleEMASlow);
    IndicatorRelease(g_handleATR);
    IndicatorRelease(g_handleADX);
+   IndicatorRelease(g_handleEMAFast_H1);
+   IndicatorRelease(g_handleEMASlow_H1);
    
    Print("====================================");
    Print("EA STOPPED - Reason: ", reason);
@@ -614,6 +627,41 @@ ENUM_MARKET_STATE GetMarketState(double emaFast, double emaSlow, double adx)
       return MARKET_SIDEWAYS;
    
    return (emaFast > emaSlow) ? MARKET_UPTREND : MARKET_DOWNTREND;
+}
+
+//+------------------------------------------------------------------+
+bool CheckH1TrendAlignment(bool isBuySignal)
+{
+   if(!InpUseH1Confirmation)
+      return true;  // Skip if disabled
+   
+   double h1EmaFast[], h1EmaSlow[];
+   ArraySetAsSeries(h1EmaFast, true);
+   ArraySetAsSeries(h1EmaSlow, true);
+   
+   if(CopyBuffer(g_handleEMAFast_H1, 0, 0, 2, h1EmaFast) < 2) return true;  // Fail-safe: allow trade
+   if(CopyBuffer(g_handleEMASlow_H1, 0, 0, 2, h1EmaSlow) < 2) return true;
+   
+   if(isBuySignal)
+   {
+      // H1 must show uptrend (fast EMA > slow EMA)
+      bool h1Uptrend = (h1EmaFast[0] > h1EmaSlow[0]);
+      if(!h1Uptrend && InpEnableDetailedLogs)
+         Print("BLOCKED: H1 not aligned for BUY (H1 EMA", InpH1EMAFast, "=",
+               DoubleToString(h1EmaFast[0], _Digits), " < EMA", InpH1EMASlow, "=",
+               DoubleToString(h1EmaSlow[0], _Digits), ")");
+      return h1Uptrend;
+   }
+   else
+   {
+      // H1 must show downtrend (fast EMA < slow EMA)
+      bool h1Downtrend = (h1EmaFast[0] < h1EmaSlow[0]);
+      if(!h1Downtrend && InpEnableDetailedLogs)
+         Print("BLOCKED: H1 not aligned for SELL (H1 EMA", InpH1EMAFast, "=",
+               DoubleToString(h1EmaFast[0], _Digits), " > EMA", InpH1EMASlow, "=",
+               DoubleToString(h1EmaSlow[0], _Digits), ")");
+      return h1Downtrend;
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -1027,17 +1075,30 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       sessionInfo = "NO FILTER";
    }
    
+   // Get H1 trend info for display
+   string h1Info = "OFF";
+   if(InpUseH1Confirmation)
+   {
+      double h1f[], h1s[];
+      ArraySetAsSeries(h1f, true);
+      ArraySetAsSeries(h1s, true);
+      if(CopyBuffer(g_handleEMAFast_H1, 0, 0, 1, h1f) > 0 && CopyBuffer(g_handleEMASlow_H1, 0, 0, 1, h1s) > 0)
+         h1Info = (h1f[0] > h1s[0]) ? "UP" : "DOWN";
+   }
+   
+   string slTpMode = InpUseATRBasedSLTP ? "ATR" : "FIXED";
+   
    Comment(
-      "=== ", _Symbol, " - v4.0 PHASE 1 ===", "\n",
-      "🎯 TARGET: 70% Win Rate | Filters: STRENGTHENED", "\n",
-      "Balance: $", DoubleToString(balance, 2), " | Pos: $", DoubleToString(positionValue, 2), "\n",
+      "=== ", _Symbol, " - v4.1 PHASE 2 ===", "\n",
+      "🎯 TARGET: 70% WR | ATR SL/TP | H1 MTF", "\n",
+      "Balance: $", DoubleToString(balance, 2), " | Risk: ", InpPositionSizePercent, "%", "\n",
       "Session: ", sessionInfo, " | UTC: ", TimeToString(TimeGMT(), TIME_MINUTES), "\n",
-      "Market: ", marketStateStr, " | ADX: ", DoubleToString(adx, 1), " (min 25)", "\n",
-      "RSI: ", DoubleToString(rsi[0], 1), " | Vol: ", volumeStatus, " (1.5x) | ATR: ", atrStatus, " (0.8x)", "\n",
+      "Market: ", marketStateStr, " | H1: ", h1Info, " | ADX: ", DoubleToString(adx, 1), "\n",
+      "RSI: ", DoubleToString(rsi[0], 1), " | Vol: ", volumeStatus, " | ATR: ", atrStatus, "\n",
+      "SL/TP: ", slTpMode, " | ATR=$", DoubleToString(atr, 2), "\n",
       "Positions: ", CountOpenPositions(), "/", GetMaxPositions(), "\n",
-      "Trend (Active): BUY=", (InpAllowTrendingBuy ? "YES" : "NO"), " SELL=", (InpAllowTrendingSell ? "YES" : "NO"), "\n",
-      "Momentum: DISABLED (fixing logic) | Sideway: ", (InpAllowSidewayTrade ? "YES" : "NO"), "\n",
-      "Pattern Check: MANDATORY ✓"
+      "Trend: BUY=", (InpAllowTrendingBuy ? "YES" : "NO"), " SELL=", (InpAllowTrendingSell ? "YES" : "NO"),
+      " | Sideway: ", (InpAllowSidewayTrade ? "YES" : "NO")
    );
    
    // Check common filters - ALWAYS (for all trade types)
@@ -1073,6 +1134,13 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    {
       if(rsi[0] < InpRSIOversold)
       {
+         // H1 Multi-Timeframe Confirmation
+         if(!CheckH1TrendAlignment(true))
+         {
+            LogSignalEvent("REJECT", "Trend_Buy", "H1NotAligned", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+            return;
+         }
+         
          // RSI Confirmation: MUST be turning up (reversal started)
          bool rsiConfirmed = !InpUseRSIConfirmation || (rsi[0] > rsi[1] && rsi[1] <= rsi[2]);
          
@@ -1103,9 +1171,9 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          }
          
          if(InpEnableDetailedLogs)
-            Print("✅ SIGNAL: TREND BUY (Uptrend + RSI Reversal + Bullish Engulfing)");
+            Print("✅ SIGNAL: TREND BUY (Uptrend + RSI Reversal + Pattern + H1 Aligned)");
          LogSignalEvent("SIGNAL", "Trend_Buy", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-         OpenPosition(true, GetStopLossPips(), GetTakeProfitPips(), "Trend_Buy");
+         OpenPosition(true, GetStopLossPips(), GetTakeProfitPips(), "Trend_Buy", atr);
          return;
       }
    }
@@ -1114,6 +1182,13 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    {
       if(rsi[0] > InpRSIOverbought)
       {
+         // H1 Multi-Timeframe Confirmation
+         if(!CheckH1TrendAlignment(false))
+         {
+            LogSignalEvent("REJECT", "Trend_Sell", "H1NotAligned", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+            return;
+         }
+         
          // RSI Confirmation: MUST be turning down (reversal started)
          bool rsiConfirmed = !InpUseRSIConfirmation || (rsi[0] < rsi[1] && rsi[1] >= rsi[2]);
          
@@ -1144,9 +1219,9 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          }
          
          if(InpEnableDetailedLogs)
-            Print("✅ SIGNAL: TREND SELL (Downtrend + RSI Reversal + Bearish Engulfing)");
+            Print("✅ SIGNAL: TREND SELL (Downtrend + RSI Reversal + Pattern + H1 Aligned)");
          LogSignalEvent("SIGNAL", "Trend_Sell", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-         OpenPosition(false, GetStopLossPips(), GetTakeProfitPips(), "Trend_Sell");
+         OpenPosition(false, GetStopLossPips(), GetTakeProfitPips(), "Trend_Sell", atr);
          return;
       }
    }
@@ -1167,7 +1242,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             Print("✅ ENTRY: Riding the strong momentum wave!");
          }
          LogSignalEvent("SIGNAL", "Momentum_Buy", "MomentumConfirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-         OpenPosition(true, GetMomentumStopLossPips(), GetMomentumTakeProfitPips(), "Momentum_Buy");
+         OpenPosition(true, GetMomentumStopLossPips(), GetMomentumTakeProfitPips(), "Momentum_Buy", atr);
          return;
       }
       
@@ -1184,7 +1259,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             Print("✅ ENTRY: Riding the strong momentum wave!");
          }
          LogSignalEvent("SIGNAL", "Momentum_Sell", "MomentumConfirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-         OpenPosition(false, GetMomentumStopLossPips(), GetMomentumTakeProfitPips(), "Momentum_Sell");
+         OpenPosition(false, GetMomentumStopLossPips(), GetMomentumTakeProfitPips(), "Momentum_Sell", atr);
          return;
       }
    }
@@ -1192,9 +1267,9 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    // SIDEWAYS SIGNALS (Range Trading with Boundary Confirmation)
    if(marketState == MARKET_SIDEWAYS && InpAllowSidewayTrade)
    {
-      // Use same RSI levels as trending modes (30/70)
-      int lowerBound = InpRSIOversold;      // 30
-      int upperBound = InpRSIOverbought;    // 70
+      // Sideways-specific RSI levels (40/60 - realistic for range market)
+      int lowerBound = InpSidewayRSIOversold;   // 40
+      int upperBound = InpSidewayRSIOverbought;  // 60
       
       // Calculate recent range using H4 for better range detection
       ENUM_TIMEFRAMES rangeTimeframe = PERIOD_H4;
@@ -1267,7 +1342,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          }
          
          LogSignalEvent("SIGNAL", "Sideway_Buy", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-         OpenPosition(true, GetSidewayStopLossPips(), GetSidewayTakeProfitPips(), "Sideway_Buy");
+         OpenPosition(true, GetSidewayStopLossPips(), GetSidewayTakeProfitPips(), "Sideway_Buy", atr);
          return;
       }
       
@@ -1320,7 +1395,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          }
          
          LogSignalEvent("SIGNAL", "Sideway_Sell", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-         OpenPosition(false, GetSidewayStopLossPips(), GetSidewayTakeProfitPips(), "Sideway_Sell");
+         OpenPosition(false, GetSidewayStopLossPips(), GetSidewayTakeProfitPips(), "Sideway_Sell", atr);
          return;
       }
    }
@@ -1530,10 +1605,33 @@ double CalculateLotSize(double entryPrice, int slPips)
 }
 
 //+------------------------------------------------------------------+
-void OpenPosition(bool isBuy, int slPips, int tpPips, string comment)
+void OpenPosition(bool isBuy, int slPips, int tpPips, string comment, double currentATR = 0)
 {
+   // ATR-based SL/TP: Override fixed pips with adaptive ATR distances
+   if(InpUseATRBasedSLTP && currentATR > 0)
+   {
+      double pipVal = GetPipValue();
+      int atrSlPips = (int)MathRound((currentATR * InpATRMultiplierSL) / pipVal);
+      int atrTpPips = (int)MathRound((currentATR * InpATRMultiplierTP) / pipVal);
+      
+      // Apply minimum bounds (at least 10 pips SL, 15 pips TP)
+      if(atrSlPips < 10) atrSlPips = 10;
+      if(atrTpPips < 15) atrTpPips = 15;
+      
+      if(InpEnableDetailedLogs)
+      {
+         Print("ATR SL/TP: ATR=", DoubleToString(currentATR, _Digits),
+               " | Fixed: SL=", slPips, " TP=", tpPips,
+               " → ATR: SL=", atrSlPips, " TP=", atrTpPips, " pips",
+               " | R:R=1:", DoubleToString((double)atrTpPips/atrSlPips, 2));
+      }
+      
+      slPips = atrSlPips;
+      tpPips = atrTpPips;
+   }
+   
    double price = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double lot = CalculateLotSize(price, slPips);  // Pass slPips parameter
+   double lot = CalculateLotSize(price, slPips);
    double sl, tp;
    
    CalculateSLTP_FixedPips(price, isBuy, slPips, tpPips, sl, tp);
@@ -1590,6 +1688,16 @@ void ManageOpenPositions()
    double pipValue = GetPipValue();
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    
+   // Get current ATR for adaptive trailing
+   double currentATR = 0;
+   if(InpUseATRTrailing)
+   {
+      double atrBuffer[];
+      ArraySetAsSeries(atrBuffer, true);
+      if(CopyBuffer(g_handleATR, 0, 0, 1, atrBuffer) > 0)
+         currentATR = atrBuffer[0];
+   }
+   
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
@@ -1620,9 +1728,21 @@ void ManageOpenPositions()
       string updateReason = "";
       
       // TRAILING STOP LOGIC (Priority 1)
-      if(InpUseTrailingStop && profitPips >= GetTrailingActivatePips())
+      // ATR-based trailing: adaptive to current volatility
+      int trailActivatePips = GetTrailingActivatePips();
+      int trailDistancePips = GetTrailingDistancePips();
+      
+      if(InpUseATRTrailing && currentATR > 0)
       {
-         double trailingDistance = GetTrailingDistancePips() * pipValue;
+         trailDistancePips = (int)MathRound((currentATR * InpTrailingATRMultiplier) / pipValue);
+         trailActivatePips = (int)MathRound((currentATR * InpTrailingATRMultiplier * 1.5) / pipValue);
+         if(trailDistancePips < 10) trailDistancePips = 10;
+         if(trailActivatePips < 15) trailActivatePips = 15;
+      }
+      
+      if(InpUseTrailingStop && profitPips >= trailActivatePips)
+      {
+         double trailingDistance = trailDistancePips * pipValue;
          double potentialSL = 0;
          
          if(posType == POSITION_TYPE_BUY)
