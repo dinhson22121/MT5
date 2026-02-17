@@ -330,6 +330,17 @@ int OnInit()
       Print("  Example: Entry 1.0500, SL 40 pips = 1.0460, TP 100 pips = 1.0600");
    }
    
+   if(StringFind(_Symbol, "EURCHF") >= 0)
+   {
+      Print("------------------------------------");
+      Print("EURCHF: 1 pip = 0.0001 (quote=CHF, auto-converted to USD)");
+      Print("  Trend SL/TP: ", GetStopLossPips(), " / ", GetTakeProfitPips(), " pips");
+      Print("  Momentum SL/TP: ", GetMomentumStopLossPips(), " / ", GetMomentumTakeProfitPips(), " pips");
+      Print("  Sideway SL/TP: ", GetSidewayStopLossPips(), " / ", GetSidewayTakeProfitPips(), " pips");
+      Print("  $/pip uses broker tickValue (CHF→USD conversion automatic)");
+      Print("  Example: Entry 0.9350, SL 50 pips = 0.9300, TP 100 pips = 0.9450");
+   }
+   
    Print("====================================");
    
    return(INIT_SUCCEEDED);
@@ -1614,9 +1625,9 @@ void OpenPosition(bool isBuy, int slPips, int tpPips, string comment, double cur
       int atrSlPips = (int)MathRound((currentATR * InpATRMultiplierSL) / pipVal);
       int atrTpPips = (int)MathRound((currentATR * InpATRMultiplierTP) / pipVal);
       
-      // Apply minimum bounds (at least 10 pips SL, 15 pips TP)
-      if(atrSlPips < 10) atrSlPips = 10;
-      if(atrTpPips < 15) atrTpPips = 15;
+      // Apply minimum bounds: never go below fixed SL/TP (safety floor)
+      if(atrSlPips < slPips) atrSlPips = slPips;
+      if(atrTpPips < tpPips) atrTpPips = tpPips;
       
       if(InpEnableDetailedLogs)
       {
@@ -1736,8 +1747,8 @@ void ManageOpenPositions()
       {
          trailDistancePips = (int)MathRound((currentATR * InpTrailingATRMultiplier) / pipValue);
          trailActivatePips = (int)MathRound((currentATR * InpTrailingATRMultiplier * 1.5) / pipValue);
-         if(trailDistancePips < 10) trailDistancePips = 10;
-         if(trailActivatePips < 15) trailActivatePips = 15;
+         if(trailDistancePips < 20) trailDistancePips = 20;
+         if(trailActivatePips < 30) trailActivatePips = 30;
       }
       
       if(InpUseTrailingStop && profitPips >= trailActivatePips)
