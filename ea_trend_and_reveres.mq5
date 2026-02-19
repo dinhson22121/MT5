@@ -116,7 +116,7 @@ input bool InpTradeUSSession = true;           // US: 13:00-22:00 UTC (New York)
 input group "=== Additional Filters ==="
 input double InpMinATRMultiplier = 0.8;        // STRENGTHENED: Require 0.8x avg ATR (was 0.5)
 input int InpATRPeriod = 14;
-input int InpMaxSpreadPips = 5;                // Max spread in pips (0=disabled)
+input int InpMaxSpreadPips = 8;                // Max spread in pips (XM has wider spreads)
 input bool InpUseCandleConfirmation = true;    // Check candle direction
 input bool InpRequireCandlePattern = true;     // STRENGTHENED: Pattern detection REQUIRED (was false)
 input double InpMinPinbarWickRatio = 2.5;      // STRENGTHENED: Min wick/body ratio for Pinbar (was 2.0)
@@ -184,8 +184,20 @@ int OnInit()
    }
    
    trade.SetExpertMagicNumber(InpMagicNumber);
-   trade.SetDeviationInPoints(50);
-   trade.SetTypeFilling(ORDER_FILLING_FOK);
+   trade.SetDeviationInPoints(100);  // XM: wider slippage tolerance
+   
+   // Auto-detect filling mode from broker (XM uses RETURN, Exness uses FOK)
+   long fillingMode = SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+   if((fillingMode & SYMBOL_FILLING_FOK) != 0)
+      trade.SetTypeFilling(ORDER_FILLING_FOK);
+   else if((fillingMode & SYMBOL_FILLING_IOC) != 0)
+      trade.SetTypeFilling(ORDER_FILLING_IOC);
+   else
+      trade.SetTypeFilling(ORDER_FILLING_RETURN);
+   
+   Print("Filling mode: ", 
+         ((fillingMode & SYMBOL_FILLING_FOK) != 0) ? "FOK" : 
+         ((fillingMode & SYMBOL_FILLING_IOC) != 0) ? "IOC" : "RETURN");
    
    double pipValue = GetPipValue();
    
