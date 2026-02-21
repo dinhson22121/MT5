@@ -93,7 +93,7 @@ struct StructureBreak
 const double BROKER_STOP_BUFFER = 1.1;       // Buffer multiplier for broker stop level
 const int    MAX_SWING_POINTS = 50;          // Maximum swing points to track
 const int    MAX_ORDER_BLOCKS = 10;          // Maximum active order blocks
-const double OB_BUFFER_PIPS = 3.0;           // Extra pips beyond OB for SL placement
+const double OB_BUFFER_PIPS = 5.0;           // Extra pips beyond OB for SL (wider for XM spread)
 const int    ATR_AVERAGE_PERIOD = 20;        // Bars for ATR average calculation
 
 //+------------------------------------------------------------------+
@@ -117,7 +117,7 @@ input int    InpOTEMaxAgeBars = 30;           // OTE max age (H4 bars, 0=no limi
 input group "=== Liquidity Sweep ==="
 input bool   InpRequireLiqSweep = true;      // Require liquidity sweep before entry
 input int    InpLiqSweepLookback = 15;       // M15 bars to look back for sweep
-input double InpMinSweepPips = 3.0;          // Min pips beyond swing for valid sweep
+input double InpMinSweepPips = 5.0;          // Min pips beyond swing for valid sweep (wider for XM spread)
 
 input group "=== Risk Management ==="
 input double InpRiskPercent = 2.0;           // Risk % per trade
@@ -165,7 +165,7 @@ input int    InpMagicNumber = 654321;        // Magic number (unique per EA)
 input int    InpMaxPositions = 3;            // Max concurrent positions
 input bool   InpUseAutoMaxPositions = true;  // Auto-scale max positions by balance
 input int    InpCooldownMinutes = 60;        // Cooldown between trades (minutes)
-input int    InpMaxSpreadPips = 5;           // Max spread in pips (0=disabled)
+input int    InpMaxSpreadPips = 6;           // Max spread (Exness~2-3, XM~4-6)
 input bool   InpAllowOppositePositions = false; // Allow opposing BUY+SELL simultaneously
 input int    InpATRPeriod = 14;              // ATR period
 
@@ -235,8 +235,20 @@ int OnInit()
    
    //--- Configure trade object
    trade.SetExpertMagicNumber(InpMagicNumber);
-   trade.SetDeviationInPoints(30);
-   trade.SetTypeFilling(ORDER_FILLING_IOC);
+   trade.SetDeviationInPoints(100);  // Wider slippage tolerance for XM STP execution
+   
+   // Auto-detect filling mode (Exness=FOK, XM=IOC/RETURN)
+   long fillingMode = SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+   if((fillingMode & SYMBOL_FILLING_FOK) != 0)
+      trade.SetTypeFilling(ORDER_FILLING_FOK);
+   else if((fillingMode & SYMBOL_FILLING_IOC) != 0)
+      trade.SetTypeFilling(ORDER_FILLING_IOC);
+   else
+      trade.SetTypeFilling(ORDER_FILLING_RETURN);
+   
+   Print("Filling mode: ", 
+         ((fillingMode & SYMBOL_FILLING_FOK) != 0) ? "FOK" : 
+         ((fillingMode & SYMBOL_FILLING_IOC) != 0) ? "IOC" : "RETURN");
    
    //--- Initialize arrays
    ArrayResize(g_swingPoints, 0);

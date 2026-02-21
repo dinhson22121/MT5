@@ -29,7 +29,7 @@
 CTrade trade;
 
 //--- Constants
-const double PATTERN_VOLUME_MULTIPLIER = 1.5;  // BALANCED: 1.5x volume for patterns (was 2.0 - too strict)
+const double PATTERN_VOLUME_MULTIPLIER = 1.25;  // BALANCED: 1.5x volume for patterns (was 2.0 - too strict)
 const double EMA_DIFF_PERCENT_THRESHOLD = 0.3;
 const int RSI_EXTREME_THRESHOLD = 75;
 const int RSI_EXTREME_LOW = 25;
@@ -55,7 +55,8 @@ input double InpMinADX = 25;                   // STRENGTHENED: Min ADX for stro
 
 input group "=== Volume Filter ==="
 input int InpVolumePeriod = 20;
-input double InpVolumeMultiplier = 1.5;        // STRENGTHENED: Require 1.5x avg volume (was 1.0)
+input double InpVolumeMultiplier = 1.0;          // Trend: Vol > avg × this (1.0 = above average)
+input double InpSidewayVolumeMultiplier = 0.8;   // Sideways: lower threshold (range = low vol naturally)
 
 input group "=== Risk Management - SCALPING ==="
 input double InpPositionSizePercent = 3.0;    // Risk 3% per trade (Exness Standard)
@@ -116,7 +117,7 @@ input bool InpTradeUSSession = true;           // US: 13:00-22:00 UTC (New York)
 input group "=== Additional Filters ==="
 input double InpMinATRMultiplier = 0.8;        // STRENGTHENED: Require 0.8x avg ATR (was 0.5)
 input int InpATRPeriod = 14;
-input int InpMaxSpreadPips = 8;                // Max spread in pips (XM has wider spreads)
+input int InpMaxSpreadPips = 6;                // Max spread (Exness~2-3, XM~4-6)
 input bool InpUseCandleConfirmation = true;    // Check candle direction
 input bool InpRequireCandlePattern = true;     // STRENGTHENED: Pattern detection REQUIRED (was false)
 input double InpMinPinbarWickRatio = 2.5;      // STRENGTHENED: Min wick/body ratio for Pinbar (was 2.0)
@@ -477,12 +478,8 @@ bool CheckCandlePattern(bool isBuySignal, double currentVolume, double avgVolume
    double high2 = iHigh(_Symbol, PERIOD_M15, 2);
    double low2 = iLow(_Symbol, PERIOD_M15, 2);
    
-   if(currentVolume <= avgVolume * PATTERN_VOLUME_MULTIPLIER)
-   {
-      if(InpEnableDetailedLogs)
-         Print("PATTERN REJECT: Volume too low (", (int)currentVolume, " vs ", (int)avgVolume, ")");
-      return false;
-   }
+   // Volume already checked per-strategy before calling this function
+   // No duplicate volume check here
    
    if(isBuySignal)
    {
@@ -996,25 +993,10 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       avgVolume /= InpVolumePeriod;
    }
    
-   bool highVolume = (currentVolume > avgVolume * InpVolumeMultiplier);
-   
-   // PHASE 1 UPGRADE: Check volume trend (current > avg of last 3 bars)
-   bool volumeTrending = true;
-   if(InpVolumePeriod >= 3)
-   {
-      double recentAvgVolume = 0;
-      for(int i = 1; i <= 3; i++)  // Last 3 bars (not including current)
-         recentAvgVolume += (double)volumeArray[i];
-      recentAvgVolume /= 3.0;
-      
-      volumeTrending = (currentVolume > recentAvgVolume);
-      
-      if(!volumeTrending && InpEnableDetailedLogs)
-         Print("INFO: Volume declining (current=", (int)currentVolume, " vs recent avg=", (int)recentAvgVolume, ")");
-   }
-   
-   // Combine both volume checks
-   bool volumeOK = highVolume && volumeTrending;
+   // Per-strategy volume flags (no more global gate blocking all strategies)
+   bool volumeOK_Trend = (currentVolume > avgVolume * InpVolumeMultiplier);        // 1.0x for trend
+   bool volumeOK_Sideways = (currentVolume > avgVolume * InpSidewayVolumeMultiplier); // 0.8x for sideways
+   bool volumeOK_Momentum = (currentVolume > avgVolume * InpMomentumVolumeMultiplier); // 1.5x for momentum
    
    // Calculate average ATR
    bool volatilityOK = true;
@@ -1043,6 +1025,42 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       case MARKET_SIDEWAYS: marketStateStr = "SIDEWAYS"; break;
    }
    
+   // === BAR ANALYSIS SUMMARY LOG ===
+   if(InpEnableDetailedLogs)
+   {
+      Print("══════════════════════════════════════");
+      Print("📊 BAR ANALYSIS | ", _Symbol, " | ", TimeToString(iTime(_Symbol, PERIOD_M15, 0)));
+      Print("══════════════════════════════════════");
+      Print("  Market State: ", marketStateStr, " | EMA34=", DoubleToString(emaFast, _Digits), " EMA89=", DoubleToString(emaSlow, _Digits));
+      Print("  RSI(", InpRSIPeriod_Scalp, "): ", DoubleToString(rsi[0], 1), " | prev=", DoubleToString(rsi[1], 1), " | prev2=", DoubleToString(rsi[2], 1));
+      Print("  ADX: ", DoubleToString(adx, 1), " (threshold=", InpMinADX, ") | ATR: $", DoubleToString(atr, 2));
+      Print("  Volume: ", (int)currentVolume, " vs avg=", (int)avgVolume, " (", DoubleToString(currentVolume/MathMax(avgVolume,1)*100, 0), "%)");
+      Print("    Trend(", InpVolumeMultiplier, "x)=", (volumeOK_Trend ? "OK" : "LOW"),
+            " | Sideways(", InpSidewayVolumeMultiplier, "x)=", (volumeOK_Sideways ? "OK" : "LOW"),
+            " | Momentum(", InpMomentumVolumeMultiplier, "x)=", (volumeOK_Momentum ? "OK" : "LOW"));
+      Print("  Volatility: ATR=$", DoubleToString(atr, 2), " vs avg=$", DoubleToString(avgATR, 2), " | OK=", (volatilityOK ? "YES" : "NO"));
+      Print("──────────────────────────────────────");
+      
+      // Log which strategies are eligible this bar
+      string eligible = "  Eligible Strategies: ";
+      if(marketState == MARKET_UPTREND && InpAllowTrendingBuy) eligible += "[TREND_BUY] ";
+      if(marketState == MARKET_DOWNTREND && InpAllowTrendingSell) eligible += "[TREND_SELL] ";
+      if(InpAllowMomentumTrade) eligible += "[MOMENTUM] ";
+      if(marketState == MARKET_SIDEWAYS && InpAllowSidewayTrade) eligible += "[SIDEWAYS] ";
+      Print(eligible);
+      
+      // Log RSI zone
+      string rsiZone = "NEUTRAL";
+      if(rsi[0] < InpRSIOversold) rsiZone = "OVERSOLD (<" + IntegerToString(InpRSIOversold) + ")";
+      else if(rsi[0] > InpRSIOverbought) rsiZone = "OVERBOUGHT (>" + IntegerToString(InpRSIOverbought) + ")";
+      else if(marketState == MARKET_SIDEWAYS)
+      {
+         if(rsi[0] < InpSidewayRSIOversold) rsiZone = "SIDEWAYS_OVERSOLD (<" + IntegerToString(InpSidewayRSIOversold) + ")";
+         else if(rsi[0] > InpSidewayRSIOverbought) rsiZone = "SIDEWAYS_OVERBOUGHT (>" + IntegerToString(InpSidewayRSIOverbought) + ")";
+      }
+      Print("  RSI Zone: ", rsiZone);
+   }
+   
    // Check if we have STRONG MOMENTUM (high vol + high ATR)
    bool hasMomentum = false;
    if(InpAllowMomentumTrade)
@@ -1051,20 +1069,52 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       bool isHighATR = (atr > avgATR * InpMomentumATRMultiplier);
       bool isStrongADX = adx > InpMinADX + MOMENTUM_ADX_BUFFER;
       
+      if(InpEnableDetailedLogs)
+      {
+         Print("  Momentum Check: Vol=", (isHighVolume ? "HIGH" : "LOW"), 
+               " (", DoubleToString(currentVolume/MathMax(avgVolume,1), 2), "x/", InpMomentumVolumeMultiplier, "x)",
+               " | ATR=", (isHighATR ? "HIGH" : "LOW"),
+               " (", DoubleToString(atr/MathMax(avgATR,0.0001), 2), "x/", InpMomentumATRMultiplier, "x)",
+               " | ADX=", (isStrongADX ? "STRONG" : "WEAK"),
+               " (", DoubleToString(adx, 1), "/", (InpMinADX + MOMENTUM_ADX_BUFFER), ")");
+      }
+      
       // UPTREND + RSI overbought + HIGH vol + HIGH ATR = Strong buying momentum
       if(marketState == MARKET_UPTREND && rsi[0] > InpRSIOverbought && isHighVolume && isHighATR && isStrongADX)
+      {
          hasMomentum = true;
+         if(InpEnableDetailedLogs)
+            Print("  >>> MOMENTUM BUY QUALIFIED: All conditions met!");
+      }
       
       // DOWNTREND + RSI oversold + HIGH vol + HIGH ATR = Strong selling momentum
       if(marketState == MARKET_DOWNTREND && rsi[0] < InpRSIOversold && isHighVolume && isHighATR && isStrongADX)
+      {
          hasMomentum = true;
+         if(InpEnableDetailedLogs)
+            Print("  >>> MOMENTUM SELL QUALIFIED: All conditions met!");
+      }
+      
+      if(!hasMomentum && InpEnableDetailedLogs)
+      {
+         string reasons = "  Momentum NOT met: ";
+         if(marketState == MARKET_SIDEWAYS) reasons += "Market=SIDEWAYS ";
+         if(rsi[0] >= InpRSIOversold && rsi[0] <= InpRSIOverbought) reasons += "RSI=NEUTRAL ";
+         if(!isHighVolume) reasons += "Vol=LOW ";
+         if(!isHighATR) reasons += "ATR=LOW ";
+         if(!isStrongADX) reasons += "ADX=WEAK ";
+         Print(reasons);
+      }
    }
+   
+   if(InpEnableDetailedLogs)
+      Print("──────────────────────────────────────");
    
    // Display status
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double positionValue = balance * (InpPositionSizePercent / 100.0);
    
-   string volumeStatus = volumeOK ? "HIGH" : "LOW";
+   string volumeStatus = volumeOK_Trend ? "HIGH" : "LOW";
    string atrStatus = volatilityOK ? "OK" : "LOW";
    
    // Get current session info
@@ -1124,24 +1174,11 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       " | Sideway: ", (InpAllowSidewayTrade ? "YES" : "NO")
    );
    
-   // Check common filters - ALWAYS (for all trade types)
-   if(!volumeOK)
-   {
-      if(InpEnableDetailedLogs)
-      {
-         if(!highVolume)
-            Print("NO SIGNAL: Volume too low (", (int)currentVolume, " vs ", (int)avgVolume, " | need ", InpVolumeMultiplier, "x)");
-         else
-            Print("NO SIGNAL: Volume declining (not trending up)");
-      }
-      LogSignalEvent("REJECT", "VolumeLow", "volume < avg*mult OR declining", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-      return;
-   }
-   
+   // Common filter: ATR only (volume is now per-strategy)
    if(!volatilityOK)
    {
       if(InpEnableDetailedLogs)
-         Print("NO SIGNAL: ATR too low");
+         Print("NO SIGNAL: ATR too low (", DoubleToString(atr, 2), " vs ", DoubleToString(avgATR * InpMinATRMultiplier, 2), ")");
       LogSignalEvent("REJECT", "ATRLow", "atr < avg*minMult", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
       return;
    }
@@ -1155,8 +1192,19 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    // TRENDING SIGNALS (Mean Reversion - Wait for Reversal)
    if(marketState == MARKET_UPTREND && InpAllowTrendingBuy)
    {
+      if(InpEnableDetailedLogs)
+         Print("🔍 Evaluating: TREND BUY | UPTREND + RSI=", DoubleToString(rsi[0], 1), " (need <", InpRSIOversold, ")");
+      
       if(rsi[0] < InpRSIOversold)
       {
+         // Volume check for Trend strategy (1.0x)
+         if(!volumeOK_Trend)
+         {
+            if(InpEnableDetailedLogs)
+               Print("BLOCKED: TREND BUY vol too low (", (int)currentVolume, " vs ", (int)(avgVolume * InpVolumeMultiplier), ")");
+            LogSignalEvent("REJECT", "Trend_Buy", "VolumeLow", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+            return;
+         }
          // H1 Multi-Timeframe Confirmation
          if(!CheckH1TrendAlignment(true))
          {
@@ -1203,8 +1251,19 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    
    if(marketState == MARKET_DOWNTREND && InpAllowTrendingSell)
    {
+      if(InpEnableDetailedLogs)
+         Print("🔍 Evaluating: TREND SELL | DOWNTREND + RSI=", DoubleToString(rsi[0], 1), " (need >", InpRSIOverbought, ")");
+      
       if(rsi[0] > InpRSIOverbought)
       {
+         // Volume check for Trend strategy (1.0x)
+         if(!volumeOK_Trend)
+         {
+            if(InpEnableDetailedLogs)
+               Print("BLOCKED: TREND SELL vol too low (", (int)currentVolume, " vs ", (int)(avgVolume * InpVolumeMultiplier), ")");
+            LogSignalEvent("REJECT", "Trend_Sell", "VolumeLow", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+            return;
+         }
          // H1 Multi-Timeframe Confirmation
          if(!CheckH1TrendAlignment(false))
          {
@@ -1290,6 +1349,9 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    // SIDEWAYS SIGNALS (Range Trading with Boundary Confirmation)
    if(marketState == MARKET_SIDEWAYS && InpAllowSidewayTrade)
    {
+      if(InpEnableDetailedLogs)
+         Print("🔍 Evaluating: SIDEWAYS RANGE | ADX=", DoubleToString(adx, 1), " RSI=", DoubleToString(rsi[0], 1));
+      
       // Sideways-specific RSI levels (40/60 - realistic for range market)
       int lowerBound = InpSidewayRSIOversold;   // 40
       int upperBound = InpSidewayRSIOverbought;  // 60
@@ -1302,6 +1364,16 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       double rangeHigh = iHigh(_Symbol, rangeTimeframe, highestBar);
       double rangeLow = iLow(_Symbol, rangeTimeframe, lowestBar);
       double rangeSize = (rangeHigh - rangeLow) / GetPipValue();
+      
+      if(InpEnableDetailedLogs)
+      {
+         Print("  Sideways Range: Low=", DoubleToString(rangeLow, _Digits), " High=", DoubleToString(rangeHigh, _Digits),
+               " Size=", DoubleToString(rangeSize, 0), " pips (min=", InpSidewayMinRangePips, ")");
+         Print("  Price=", DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_BID), _Digits),
+               " | Dist from Low=", DoubleToString((SymbolInfoDouble(_Symbol, SYMBOL_BID) - rangeLow) / GetPipValue(), 1), " pips",
+               " | Dist from High=", DoubleToString((rangeHigh - SymbolInfoDouble(_Symbol, SYMBOL_BID)) / GetPipValue(), 1), " pips");
+         Print("  RSI Zone: ", DoubleToString(rsi[0], 1), " (Buy<", lowerBound, " | Sell>", upperBound, ")");
+      }
       
       // Filter 1: Check if range is large enough to trade
       if(rangeSize < InpSidewayMinRangePips)
@@ -1319,6 +1391,14 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       // BUY when RSI hits lower bound (oversold in range)
       if(rsi[0] < lowerBound)
       {
+         // Volume check for Sideways strategy (0.8x — lower threshold)
+         if(!volumeOK_Sideways)
+         {
+            if(InpEnableDetailedLogs)
+               Print("BLOCKED: SIDEWAYS BUY vol too low (", (int)currentVolume, " vs ", (int)(avgVolume * InpSidewayVolumeMultiplier), ")");
+            return;
+         }
+         
          // Filter 1: Must be near range bottom (support)
          if(distanceFromLow > InpSidewayMaxDistanceToBoundary)
          {
@@ -1372,6 +1452,14 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       // SELL when RSI hits upper bound (overbought in range)
       if(rsi[0] > upperBound)
       {
+         // Volume check for Sideways strategy (0.8x — lower threshold)
+         if(!volumeOK_Sideways)
+         {
+            if(InpEnableDetailedLogs)
+               Print("BLOCKED: SIDEWAYS SELL vol too low (", (int)currentVolume, " vs ", (int)(avgVolume * InpSidewayVolumeMultiplier), ")");
+            return;
+         }
+         
          // Filter 1: Must be near range top (resistance)
          if(distanceFromHigh > InpSidewayMaxDistanceToBoundary)
          {
