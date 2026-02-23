@@ -61,6 +61,8 @@ input double InpSidewayVolumeMultiplier = 0.8;   // Sideways: lower threshold (r
 input group "=== Risk Management - SCALPING ==="
 input double InpPositionSizePercent = 3.0;    // Risk 3% per trade (Exness Standard)
 input double InpMaxLotSize = 1.5;             // Max lot size limit (0=no limit)
+input double InpMaxSafetyPercent = 10.0;      // Max risk % hard limit (safety cap)
+input double InpSmallAccountThreshold = 200.0; // Balance below this → auto-reduce SL/TP
 input int InpStopLossPips_Scalp = 50;         // Scalping: SL 50 pips
 input int InpTakeProfitPips_Scalp = 100;      // Scalping: TP 100 (R:R = 1:2)
 input int InpBreakevenPips_Scalp = 40;        // Scalping: Activate breakeven at +40
@@ -92,8 +94,8 @@ input int InpSidewayTakeProfitPips_LongTerm = 200; // Long-Term: Match trend TP
 input int InpSidewayRangePeriod = 50;          // Bars to calculate range on H4 timeframe
 input int InpSidewayMinRangePips = 200;        // Min range size to trade (skip small ranges)
 input int InpSidewayMaxDistanceToBoundary = 30; // Max distance from support/resistance (tighter)
-input int InpSidewayRSIOversold = 40;      // Sideways RSI buy level (40 - realistic for range market)
-input int InpSidewayRSIOverbought = 60;    // Sideways RSI sell level (60 - realistic for range market)
+input int InpSidewayRSIOversold = 30;      // Sideways RSI buy level (40 - realistic for range market)
+input int InpSidewayRSIOverbought = 70;    // Sideways RSI sell level (60 - realistic for range market)
 
 input group "=== Momentum Trading Settings ==="
 input bool InpAllowMomentumTrade = true;       // Momentum mode: FOMO breakout trading
@@ -150,17 +152,27 @@ int g_handleADX;
 int g_handleEMAFast_H1;  // H1 timeframe EMA for multi-TF confirmation
 int g_handleEMASlow_H1;  // H1 timeframe EMA for multi-TF confirmation
 
-//--- Profile helper functions
+//--- Balance-based auto-scaling for small accounts
+//    Balance < $200: scale down SL/TP/BE/Trail to 60% (e.g. 50→30, 100→60)
+//    Balance >= $200: use full input values
+double GetBalanceScale()
+{
+   double bal = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(bal < InpSmallAccountThreshold) return 0.6;  // 30/60 instead of 50/100
+   return 1.0;
+}
+
+//--- Profile helper functions (with balance scaling)
 int GetRSIPeriod() { return InpEnableScalping ? InpRSIPeriod_Scalp : InpRSIPeriod_LongTerm; }
-int GetStopLossPips() { return InpEnableScalping ? InpStopLossPips_Scalp : InpStopLossPips_LongTerm; }
-int GetTakeProfitPips() { return InpEnableScalping ? InpTakeProfitPips_Scalp : InpTakeProfitPips_LongTerm; }
-int GetBreakevenPips() { return InpEnableScalping ? InpBreakevenPips_Scalp : InpBreakevenPips_LongTerm; }
-int GetTrailingActivatePips() { return InpEnableScalping ? InpTrailingActivatePips_Scalp : InpTrailingActivatePips_LongTerm; }
-int GetTrailingDistancePips() { return InpEnableScalping ? InpTrailingDistancePips_Scalp : InpTrailingDistancePips_LongTerm; }
-int GetSidewayStopLossPips() { return InpEnableScalping ? InpSidewayStopLossPips_Scalp : InpSidewayStopLossPips_LongTerm; }
-int GetSidewayTakeProfitPips() { return InpEnableScalping ? InpSidewayTakeProfitPips_Scalp : InpSidewayTakeProfitPips_LongTerm; }
-int GetMomentumStopLossPips() { return InpEnableScalping ? InpMomentumStopLossPips_Scalp : InpMomentumStopLossPips_LongTerm; }
-int GetMomentumTakeProfitPips() { return InpEnableScalping ? InpMomentumTakeProfitPips_Scalp : InpMomentumTakeProfitPips_LongTerm; }
+int GetStopLossPips()        { return (int)MathRound((InpEnableScalping ? InpStopLossPips_Scalp : InpStopLossPips_LongTerm) * GetBalanceScale()); }
+int GetTakeProfitPips()      { return (int)MathRound((InpEnableScalping ? InpTakeProfitPips_Scalp : InpTakeProfitPips_LongTerm) * GetBalanceScale()); }
+int GetBreakevenPips()       { return (int)MathRound((InpEnableScalping ? InpBreakevenPips_Scalp : InpBreakevenPips_LongTerm) * GetBalanceScale()); }
+int GetTrailingActivatePips(){ return (int)MathRound((InpEnableScalping ? InpTrailingActivatePips_Scalp : InpTrailingActivatePips_LongTerm) * GetBalanceScale()); }
+int GetTrailingDistancePips(){ return (int)MathRound((InpEnableScalping ? InpTrailingDistancePips_Scalp : InpTrailingDistancePips_LongTerm) * GetBalanceScale()); }
+int GetSidewayStopLossPips()   { return (int)MathRound((InpEnableScalping ? InpSidewayStopLossPips_Scalp : InpSidewayStopLossPips_LongTerm) * GetBalanceScale()); }
+int GetSidewayTakeProfitPips() { return (int)MathRound((InpEnableScalping ? InpSidewayTakeProfitPips_Scalp : InpSidewayTakeProfitPips_LongTerm) * GetBalanceScale()); }
+int GetMomentumStopLossPips()  { return (int)MathRound((InpEnableScalping ? InpMomentumStopLossPips_Scalp : InpMomentumStopLossPips_LongTerm) * GetBalanceScale()); }
+int GetMomentumTakeProfitPips(){ return (int)MathRound((InpEnableScalping ? InpMomentumTakeProfitPips_Scalp : InpMomentumTakeProfitPips_LongTerm) * GetBalanceScale()); }
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -205,6 +217,13 @@ int OnInit()
    Print("=====================================");
    Print("EA INITIALIZED - v4.1 PHASE 2");
    Print("PROFILE: ", InpEnableScalping ? "SCALPING" : "LONG-TERM");
+   double bal = AccountInfoDouble(ACCOUNT_EQUITY);
+   double scale = GetBalanceScale();
+   if(scale < 1.0)
+      Print("💰 SMALL ACCOUNT MODE: Equity $", DoubleToString(bal,2), " < $", DoubleToString(InpSmallAccountThreshold,0), " → SL/TP scaled to ", DoubleToString(scale*100,0), "%");
+   else
+      Print("💰 NORMAL MODE: Equity $", DoubleToString(bal,2), " ≥ $", DoubleToString(InpSmallAccountThreshold,0), " → full SL/TP");
+   Print("   Safety limit: ", DoubleToString(InpMaxSafetyPercent,1), "% max risk per trade");
    Print("=====================================");
    Print("🔧 v4.1 PHASE 2: Strategy Optimization");
    Print("   ATR-based SL/TP: ", InpUseATRBasedSLTP ? "ENABLED" : "DISABLED",
@@ -908,7 +927,7 @@ int GetMaxPositions()
    if(!InpUseAutoMaxPositions)
       return InpMaxPositions;
    
-   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double balance = AccountInfoDouble(ACCOUNT_EQUITY);
    if(balance < 200) return 3;
    else if(balance < 500) return 4;
    else if(balance < 1000) return 5;
@@ -1033,12 +1052,16 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       Print("══════════════════════════════════════");
       Print("  Market State: ", marketStateStr, " | EMA34=", DoubleToString(emaFast, _Digits), " EMA89=", DoubleToString(emaSlow, _Digits));
       Print("  RSI(", InpRSIPeriod_Scalp, "): ", DoubleToString(rsi[0], 1), " | prev=", DoubleToString(rsi[1], 1), " | prev2=", DoubleToString(rsi[2], 1));
-      Print("  ADX: ", DoubleToString(adx, 1), " (threshold=", InpMinADX, ") | ATR: $", DoubleToString(atr, 2));
+      Print("  ADX: ", DoubleToString(adx, 1), " (threshold=", InpMinADX, ") | ATR: ", DoubleToString(atr, _Digits));
       Print("  Volume: ", (int)currentVolume, " vs avg=", (int)avgVolume, " (", DoubleToString(currentVolume/MathMax(avgVolume,1)*100, 0), "%)");
       Print("    Trend(", InpVolumeMultiplier, "x)=", (volumeOK_Trend ? "OK" : "LOW"),
             " | Sideways(", InpSidewayVolumeMultiplier, "x)=", (volumeOK_Sideways ? "OK" : "LOW"),
             " | Momentum(", InpMomentumVolumeMultiplier, "x)=", (volumeOK_Momentum ? "OK" : "LOW"));
-      Print("  Volatility: ATR=$", DoubleToString(atr, 2), " vs avg=$", DoubleToString(avgATR, 2), " | OK=", (volatilityOK ? "YES" : "NO"));
+      Print("  Volatility (Global): ATR=", DoubleToString(atr, _Digits), " vs avg=", DoubleToString(avgATR, _Digits),
+            " (", DoubleToString(atr/MathMax(avgATR,0.0001), 2), "x | need ", InpMinATRMultiplier, "x) = ", (volatilityOK ? "OK" : "BLOCKED"));
+      Print("  Volatility (Momentum): ATR ", DoubleToString(atr/MathMax(avgATR,0.0001), 2), "x vs need ", InpMomentumATRMultiplier, "x = ",
+            ((atr > avgATR * InpMomentumATRMultiplier) ? "OK" : "LOW"),
+            " (need >", DoubleToString(avgATR * InpMomentumATRMultiplier, _Digits), ")");
       Print("──────────────────────────────────────");
       
       // Log which strategies are eligible this bar
@@ -1111,7 +1134,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       Print("──────────────────────────────────────");
    
    // Display status
-   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double balance = AccountInfoDouble(ACCOUNT_EQUITY);
    double positionValue = balance * (InpPositionSizePercent / 100.0);
    
    string volumeStatus = volumeOK_Trend ? "HIGH" : "LOW";
@@ -1522,7 +1545,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
 //+------------------------------------------------------------------+
 double CalculateLotSize(double entryPrice, int slPips)
 {
-   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double balance = AccountInfoDouble(ACCOUNT_EQUITY);
    double riskAmountUSD = balance * (InpPositionSizePercent / 100.0);
    
    // Get broker constraints
@@ -1663,8 +1686,8 @@ double CalculateLotSize(double entryPrice, int slPips)
          Print("⚠️ Lot size above maximum, capped at: ", maxLot);
    }
    
-   // Additional safety: Never risk more than 5% even if user sets higher
-   double maxRiskAmount = balance * 0.05; // 5% hard limit
+   // Additional safety: Never risk more than InpMaxSafetyPercent% even if user sets higher
+   double maxRiskAmount = balance * (InpMaxSafetyPercent / 100.0); // Configurable hard limit
    double actualRiskAmount = lotSize * slPips * moneyPerPipPerLot;
    
    if(actualRiskAmount > maxRiskAmount)
@@ -1672,9 +1695,24 @@ double CalculateLotSize(double entryPrice, int slPips)
       double safeLotSize = maxRiskAmount / (slPips * moneyPerPipPerLot);
       safeLotSize = MathFloor(safeLotSize / lotStep) * lotStep;
       
-      Print("🛑 SAFETY LIMIT: Risk $", DoubleToString(actualRiskAmount,2), 
-            " exceeds 5% max ($", DoubleToString(maxRiskAmount,2), ")");
-      Print("   Reducing lot: ", DoubleToString(lotSize,2), " → ", DoubleToString(safeLotSize,2));
+      // If safe lot < min lot, allow min lot with warning (small account override)
+      if(safeLotSize < minLot)
+      {
+         double minLotRisk = minLot * slPips * moneyPerPipPerLot;
+         double minLotRiskPct = (minLotRisk / balance) * 100.0;
+         Print("⚠️ SMALL ACCOUNT OVERRIDE: Min lot ", DoubleToString(minLot,2), 
+               " risks $", DoubleToString(minLotRisk,2), 
+               " (", DoubleToString(minLotRiskPct,1), "% of equity)");
+         Print("   Safety limit ", DoubleToString(InpMaxSafetyPercent,1), 
+               "% exceeded but using min lot to allow trading");
+         safeLotSize = minLot;
+      }
+      else
+      {
+         Print("🛑 SAFETY LIMIT: Risk $", DoubleToString(actualRiskAmount,2), 
+               " exceeds ", DoubleToString(InpMaxSafetyPercent,1), "% max ($", DoubleToString(maxRiskAmount,2), ")");
+         Print("   Reducing lot: ", DoubleToString(lotSize,2), " → ", DoubleToString(safeLotSize,2));
+      }
       
       lotSize = safeLotSize;
    }
