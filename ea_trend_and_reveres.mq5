@@ -99,7 +99,8 @@ input int InpSidewayRSIOverbought = 70;    // Sideways RSI sell level (60 - real
 
 input group "=== Momentum Trading Settings ==="
 input bool InpAllowMomentumTrade = true;       // Momentum mode: FOMO breakout trading
-input bool InpUseMomentumConfirmation = false; // Momentum = no confirmation needed
+input bool InpMomentumRequireH1 = true;        // Require H1 trend alignment for momentum
+input bool InpMomentumRequirePattern = true;    // Require candle pattern for momentum
 input int InpMomentumStopLossPips_Scalp = 50;   // Scalping: SL 50 pips
 input int InpMomentumTakeProfitPips_Scalp = 100; // Scalping: TP 100 (R:R = 1:2)
 input int InpMomentumStopLossPips_LongTerm = 80; // Long-Term: Wider SL
@@ -107,9 +108,15 @@ input int InpMomentumTakeProfitPips_LongTerm = 200; // Long-Term: TP
 input double InpMomentumVolumeMultiplier = 1.5; // HIGH volume required (was global 1.0)
 input double InpMomentumATRMultiplier = 1.2;    // HIGH ATR required (was global 0.5)
 
+input group "=== Crypto/BTC Adaptation ==="
+input double InpCryptoATRMultiplierSL = 1.0;    // Crypto SL = ATR × this (tighter than forex 1.5x)
+input double InpCryptoATRMultiplierTP = 3.0;    // Crypto TP = ATR × this (wider for big moves)
+input int InpCryptoRSIOversold = 35;            // Crypto RSI oversold (BTC: deeper pullback before entry)
+input int InpCryptoRSIOverbought = 65;          // Crypto RSI overbought (BTC: earlier exit signal)
+
 input group "=== Trading Rules ==="
-input int InpMinutesBetwenTrades = 30;        // Cooldown between trades (minutes)
-input int InpCooldownSeconds = 1800;          // Cooldown in seconds (overrides minutes if >0)
+input int InpMinutesBetwenTrades = 60;        // Cooldown between trades (minutes)
+input int InpCooldownSeconds = 3600;          // Cooldown in seconds (overrides minutes if >0)
 input bool InpAllowOnCurrentBar = false;      // Allow trading on currently forming bar (for testing)
 input bool InpUseTimeFilter = false;           // Enable session filter
 input bool InpTradeAsianSession = false;       // Asian: 1:00-9:00 UTC (Tokyo)
@@ -139,8 +146,8 @@ input int InpH1EMASlow = 50;                   // H1 Slow EMA period
 
 input group "=== Debug Settings ==="
 input bool InpEnableDetailedLogs = true;
-input bool InpEnableFileLogging = false;           // Write signal/trade events to Files\EA_DebugLog.csv
-input string InpDebugLogFileName = "EA_DebugLog.csv";  // Filename in MT5 Files folder
+input bool InpEnableFileLogging = true;            // Write signal/trade events to daily CSV
+input string InpLogFolder = "EA_Logs";               // Folder in MT5 Files (daily files auto-created)
 
 //--- Global Variables
 datetime g_lastTradeTime = 0;
@@ -269,7 +276,8 @@ int OnInit()
    if(InpAllowMomentumTrade)
    {
       Print("  Logic: UPTREND+RSI>70=BUY | DOWNTREND+RSI<30=SELL");
-      Print("  Confirmation: ", InpUseMomentumConfirmation ? "YES (wait reversal)" : "NO (immediate)");
+      Print("  Require H1 Alignment: ", InpMomentumRequireH1 ? "YES" : "NO");
+      Print("  Require Candle Pattern: ", InpMomentumRequirePattern ? "YES" : "NO");
       Print("  SL: ", GetMomentumStopLossPips(), " pips | TP: ", GetMomentumTakeProfitPips(), " pips");
       Print("  R:R = 1:", DoubleToString((double)GetMomentumTakeProfitPips()/GetMomentumStopLossPips(), 2));
    }
@@ -928,9 +936,10 @@ int GetMaxPositions()
       return InpMaxPositions;
    
    double balance = AccountInfoDouble(ACCOUNT_EQUITY);
-   if(balance < 200) return 3;
-   else if(balance < 500) return 4;
-   else if(balance < 1000) return 5;
+   if(balance < 100) return 1;       // <$100: Only 1 position (survival mode)
+   else if(balance < 200) return 2;  // <$200: Max 2 positions
+   else if(balance < 500) return 3;
+   else if(balance < 1000) return 4;
    else return 7;
 }
 
@@ -958,20 +967,55 @@ int CountOpenPositions()
 }
 
 //+------------------------------------------------------------------+
-// File logging helpers (CSV) for backtest analysis
+// File logging helpers (CSV) - Daily file: EA_Logs/EA_2026.02.24_BTCUSD.csv
+string GetDailyLogFileName()
+{
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   string dateStr = IntegerToString(dt.year) + "." 
+                  + StringFormat("%02d", dt.mon) + "."
+                  + StringFormat("%02d", dt.day);
+   return InpLogFolder + "/EA_" + dateStr + "_" + _Symbol + ".csv";
+}
+
+void WriteCsvHeader(int fh, string fileType)
+{
+   if(fileType == "SIGNAL")
+      FileWriteString(fh, "Time,Symbol,Event,SignalType,MarketState,Reason,RSI,AvgVol,CurrVol,ATR,AvgATR,ADX,Equity,OpenPos,MaxPos\r\n");
+   else
+      FileWriteString(fh, "Time,Symbol,Event,Stage,Comment,Direction,Price,SL,TP,Lot,RiskUSD,RiskPct,ResultCode,Ticket,OpenPos,MaxPos\r\n");
+}
+
 void DebugLogCSV(string line)
 {
    if(!InpEnableFileLogging) return;
-   int fh = FileOpen(InpDebugLogFileName, FILE_READ|FILE_WRITE|FILE_CSV|FILE_COMMON);
+   string fileName = GetDailyLogFileName();
+   
+   // Check if file exists to decide whether to write header
+   bool isNewFile = !FileIsExist(fileName, FILE_COMMON);
+   
+   int fh = FileOpen(fileName, FILE_READ|FILE_WRITE|FILE_CSV|FILE_COMMON);
    if(fh == INVALID_HANDLE)
    {
-      fh = FileOpen(InpDebugLogFileName, FILE_WRITE|FILE_CSV|FILE_COMMON);
+      // Try create folder + file
+      fh = FileOpen(fileName, FILE_WRITE|FILE_CSV|FILE_COMMON);
+      isNewFile = true;
       if(fh == INVALID_HANDLE)
       {
-         if(InpEnableDetailedLogs) Print("ERROR: Cannot open debug file ", InpDebugLogFileName);
+         if(InpEnableDetailedLogs) Print("ERROR: Cannot open log file ", fileName);
          return;
       }
    }
+   
+   if(isNewFile && FileSize(fh) == 0)
+   {
+      // Auto-detect header type from line content
+      if(StringFind(line, ",TRADE,") >= 0)
+         WriteCsvHeader(fh, "TRADE");
+      else
+         WriteCsvHeader(fh, "SIGNAL");
+   }
+   
    FileSeek(fh, 0, SEEK_END);
    FileWriteString(fh, line);
    FileWriteString(fh, "\r\n");
@@ -982,7 +1026,14 @@ void LogSignalEvent(string eventType, string signalType, string reason, double r
 {
    if(!InpEnableFileLogging) return;
    string ts = TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS);
-   string rec = ts + "," + _Symbol + "," + eventType + "," + signalType + "," + marketStateStr + "," + reason + "," + DoubleToString(rsiVal,1) + "," + DoubleToString(avgVol,0) + "," + DoubleToString(currVol,0) + "," + DoubleToString(atrVal,4) + "," + DoubleToString(avgATRVal,4) + "," + DoubleToString(adxVal,1) + "," + IntegerToString(CountOpenPositions()) + "," + IntegerToString(GetMaxPositions());
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   string rec = ts + "," + _Symbol + "," + eventType + "," + signalType + "," + marketStateStr + "," + reason 
+              + "," + DoubleToString(rsiVal,1) 
+              + "," + DoubleToString(avgVol,0) + "," + DoubleToString(currVol,0) 
+              + "," + DoubleToString(atrVal,_Digits) + "," + DoubleToString(avgATRVal,_Digits) 
+              + "," + DoubleToString(adxVal,1)
+              + ",$" + DoubleToString(equity,2)
+              + "," + IntegerToString(CountOpenPositions()) + "," + IntegerToString(GetMaxPositions());
    DebugLogCSV(rec);
 }
 
@@ -992,7 +1043,17 @@ void LogTradeEvent(string stage, string comment, bool isBuy, double price, doubl
    string ts = TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS);
    string dir = isBuy ? "BUY" : "SELL";
    string ticketStr = (ticket == 0) ? "0" : IntegerToString((int)ticket);
-   string rec = ts + "," + _Symbol + ",TRADE," + stage + "," + comment + "," + dir + "," + DoubleToString(price, _Digits) + "," + DoubleToString(sl, _Digits) + "," + DoubleToString(tp, _Digits) + "," + DoubleToString(lot,2) + "," + IntegerToString(resultCode) + "," + ticketStr + "," + IntegerToString(CountOpenPositions()) + "," + IntegerToString(GetMaxPositions());
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double pipVal = GetPipValue();
+   double riskUSD = lot * MathAbs(price - sl) / pipVal * 10;  // approximate
+   double riskPct = (equity > 0) ? (riskUSD / equity * 100.0) : 0;
+   string rec = ts + "," + _Symbol + ",TRADE," + stage + "," + comment + "," + dir 
+              + "," + DoubleToString(price, _Digits) 
+              + "," + DoubleToString(sl, _Digits) + "," + DoubleToString(tp, _Digits) 
+              + "," + DoubleToString(lot,2)
+              + ",$" + DoubleToString(riskUSD,2) + "," + DoubleToString(riskPct,1) + "%"
+              + "," + IntegerToString(resultCode) + "," + ticketStr 
+              + "," + IntegerToString(CountOpenPositions()) + "," + IntegerToString(GetMaxPositions());
    DebugLogCSV(rec);
 }  
 
@@ -1072,7 +1133,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       if(marketState == MARKET_SIDEWAYS && InpAllowSidewayTrade) eligible += "[SIDEWAYS] ";
       Print(eligible);
       
-      // Log RSI zone
+      // Log RSI zone (using effective thresholds for crypto)
       string rsiZone = "NEUTRAL";
       if(rsi[0] < InpRSIOversold) rsiZone = "OVERSOLD (<" + IntegerToString(InpRSIOversold) + ")";
       else if(rsi[0] > InpRSIOverbought) rsiZone = "OVERBOUGHT (>" + IntegerToString(InpRSIOverbought) + ")";
@@ -1081,8 +1142,15 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          if(rsi[0] < InpSidewayRSIOversold) rsiZone = "SIDEWAYS_OVERSOLD (<" + IntegerToString(InpSidewayRSIOversold) + ")";
          else if(rsi[0] > InpSidewayRSIOverbought) rsiZone = "SIDEWAYS_OVERBOUGHT (>" + IntegerToString(InpSidewayRSIOverbought) + ")";
       }
-      Print("  RSI Zone: ", rsiZone);
+      if(IsCryptoSymbol())
+         Print("  RSI Zone: ", rsiZone, " | Crypto thresholds: ", InpCryptoRSIOversold, "/", InpCryptoRSIOverbought);
+      else
+         Print("  RSI Zone: ", rsiZone);
    }
+   
+   // Crypto-adaptive RSI thresholds
+   int effectiveRSIOversold = IsCryptoSymbol() ? InpCryptoRSIOversold : InpRSIOversold;
+   int effectiveRSIOverbought = IsCryptoSymbol() ? InpCryptoRSIOverbought : InpRSIOverbought;
    
    // Check if we have STRONG MOMENTUM (high vol + high ATR)
    bool hasMomentum = false;
@@ -1103,7 +1171,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       }
       
       // UPTREND + RSI overbought + HIGH vol + HIGH ATR = Strong buying momentum
-      if(marketState == MARKET_UPTREND && rsi[0] > InpRSIOverbought && isHighVolume && isHighATR && isStrongADX)
+      if(marketState == MARKET_UPTREND && rsi[0] > effectiveRSIOverbought && isHighVolume && isHighATR && isStrongADX)
       {
          hasMomentum = true;
          if(InpEnableDetailedLogs)
@@ -1111,7 +1179,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       }
       
       // DOWNTREND + RSI oversold + HIGH vol + HIGH ATR = Strong selling momentum
-      if(marketState == MARKET_DOWNTREND && rsi[0] < InpRSIOversold && isHighVolume && isHighATR && isStrongADX)
+      if(marketState == MARKET_DOWNTREND && rsi[0] < effectiveRSIOversold && isHighVolume && isHighATR && isStrongADX)
       {
          hasMomentum = true;
          if(InpEnableDetailedLogs)
@@ -1122,13 +1190,13 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       {
          string reasons = "  Momentum NOT met: ";
          if(marketState == MARKET_SIDEWAYS) reasons += "Market=SIDEWAYS ";
-         if(rsi[0] >= InpRSIOversold && rsi[0] <= InpRSIOverbought) reasons += "RSI=NEUTRAL ";
+         if(rsi[0] >= effectiveRSIOversold && rsi[0] <= effectiveRSIOverbought) reasons += "RSI=NEUTRAL ";
          if(!isHighVolume) reasons += "Vol=LOW ";
          if(!isHighATR) reasons += "ATR=LOW ";
          if(!isStrongADX) reasons += "ADX=WEAK ";
          Print(reasons);
       }
-   }
+   } // end if(InpAllowMomentumTrade)
    
    if(InpEnableDetailedLogs)
       Print("──────────────────────────────────────");
@@ -1216,9 +1284,9 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    if(marketState == MARKET_UPTREND && InpAllowTrendingBuy)
    {
       if(InpEnableDetailedLogs)
-         Print("🔍 Evaluating: TREND BUY | UPTREND + RSI=", DoubleToString(rsi[0], 1), " (need <", InpRSIOversold, ")");
+         Print("🔍 Evaluating: TREND BUY | UPTREND + RSI=", DoubleToString(rsi[0], 1), " (need <", effectiveRSIOversold, ")");
       
-      if(rsi[0] < InpRSIOversold)
+      if(rsi[0] < effectiveRSIOversold)
       {
          // Volume check for Trend strategy (1.0x)
          if(!volumeOK_Trend)
@@ -1275,9 +1343,9 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    if(marketState == MARKET_DOWNTREND && InpAllowTrendingSell)
    {
       if(InpEnableDetailedLogs)
-         Print("🔍 Evaluating: TREND SELL | DOWNTREND + RSI=", DoubleToString(rsi[0], 1), " (need >", InpRSIOverbought, ")");
+         Print("🔍 Evaluating: TREND SELL | DOWNTREND + RSI=", DoubleToString(rsi[0], 1), " (need >", effectiveRSIOverbought, ")");
       
-      if(rsi[0] > InpRSIOverbought)
+      if(rsi[0] > effectiveRSIOverbought)
       {
          // Volume check for Trend strategy (1.0x)
          if(!volumeOK_Trend)
@@ -1331,20 +1399,40 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       }
    }
    
-   // MOMENTUM SIGNALS (Aggressive - Entry on Strong Moves)
+   // MOMENTUM SIGNALS (Optimized - With H1 + Pattern Confirmation)
    if(InpAllowMomentumTrade && hasMomentum)
    {
       // UPTREND + RSI overbought + HIGH volume + HIGH ATR -> Strong BUY momentum
-      if(marketState == MARKET_UPTREND && InpAllowTrendingBuy && rsi[0] > InpRSIOverbought)
+      if(marketState == MARKET_UPTREND && InpAllowTrendingBuy && rsi[0] > effectiveRSIOverbought)
       {
+         // H1 Confirmation for Momentum (prevents false breakouts)
+         if(InpMomentumRequireH1 && !CheckH1TrendAlignment(true))
+         {
+            if(InpEnableDetailedLogs)
+               Print("BLOCKED: MOMENTUM BUY - H1 not aligned (EMA", InpH1EMAFast, "<EMA", InpH1EMASlow, ")");
+            LogSignalEvent("REJECT", "Momentum_Buy", "H1NotAligned", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+            return;
+         }
+         
+         // Pattern Confirmation for Momentum (prevents chasing into reversals)
+         if(InpMomentumRequirePattern && !CheckCandlePattern(true, currentVolume, avgVolume))
+         {
+            if(InpEnableDetailedLogs)
+               Print("BLOCKED: MOMENTUM BUY - No bullish candle pattern");
+            LogSignalEvent("REJECT", "Momentum_Buy", "PatternMissing", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+            return;
+         }
+         
          if(InpEnableDetailedLogs)
          {
-            Print("⚡ MOMENTUM BUY DETECTED:");
-            Print("  RSI: ", DoubleToString(rsi[0], 1), " (overbought)");
+            Print("⚡ MOMENTUM BUY CONFIRMED:");
+            Print("  RSI: ", DoubleToString(rsi[0], 1), " (>", effectiveRSIOverbought, ")");
             Print("  Volume: ", DoubleToString(currentVolume/avgVolume, 2), "x avg (HIGH)");
             Print("  ATR: ", DoubleToString(atr/avgATR, 2), "x avg (HIGH)");
             Print("  ADX: ", DoubleToString(adx, 1), " (strong trend)");
-            Print("✅ ENTRY: Riding the strong momentum wave!");
+            Print("  H1: ", InpMomentumRequireH1 ? "ALIGNED ✅" : "SKIP");
+            Print("  Pattern: ", InpMomentumRequirePattern ? "CONFIRMED ✅" : "SKIP");
+            Print("  Crypto: ", IsCryptoSymbol() ? "YES (adaptive ATR)" : "NO");
          }
          LogSignalEvent("SIGNAL", "Momentum_Buy", "MomentumConfirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
          OpenPosition(true, GetMomentumStopLossPips(), GetMomentumTakeProfitPips(), "Momentum_Buy", atr);
@@ -1352,16 +1440,36 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       }
       
       // DOWNTREND + RSI oversold + HIGH volume + HIGH ATR -> Strong SELL momentum
-      if(marketState == MARKET_DOWNTREND && InpAllowTrendingSell && rsi[0] < InpRSIOversold)
+      if(marketState == MARKET_DOWNTREND && InpAllowTrendingSell && rsi[0] < effectiveRSIOversold)
       {
+         // H1 Confirmation for Momentum
+         if(InpMomentumRequireH1 && !CheckH1TrendAlignment(false))
+         {
+            if(InpEnableDetailedLogs)
+               Print("BLOCKED: MOMENTUM SELL - H1 not aligned (EMA", InpH1EMAFast, ">EMA", InpH1EMASlow, ")");
+            LogSignalEvent("REJECT", "Momentum_Sell", "H1NotAligned", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+            return;
+         }
+         
+         // Pattern Confirmation for Momentum
+         if(InpMomentumRequirePattern && !CheckCandlePattern(false, currentVolume, avgVolume))
+         {
+            if(InpEnableDetailedLogs)
+               Print("BLOCKED: MOMENTUM SELL - No bearish candle pattern");
+            LogSignalEvent("REJECT", "Momentum_Sell", "PatternMissing", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+            return;
+         }
+         
          if(InpEnableDetailedLogs)
          {
-            Print("⚡ MOMENTUM SELL DETECTED:");
-            Print("  RSI: ", DoubleToString(rsi[0], 1), " (oversold)");
+            Print("⚡ MOMENTUM SELL CONFIRMED:");
+            Print("  RSI: ", DoubleToString(rsi[0], 1), " (< ", effectiveRSIOversold, ")");
             Print("  Volume: ", DoubleToString(currentVolume/avgVolume, 2), "x avg (HIGH)");
             Print("  ATR: ", DoubleToString(atr/avgATR, 2), "x avg (HIGH)");
             Print("  ADX: ", DoubleToString(adx, 1), " (strong trend)");
-            Print("✅ ENTRY: Riding the strong momentum wave!");
+            Print("  H1: ", InpMomentumRequireH1 ? "ALIGNED ✅" : "SKIP");
+            Print("  Pattern: ", InpMomentumRequirePattern ? "CONFIRMED ✅" : "SKIP");
+            Print("  Crypto: ", IsCryptoSymbol() ? "YES (adaptive ATR)" : "NO");
          }
          LogSignalEvent("SIGNAL", "Momentum_Sell", "MomentumConfirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
          OpenPosition(false, GetMomentumStopLossPips(), GetMomentumTakeProfitPips(), "Momentum_Sell", atr);
@@ -1546,7 +1654,16 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
 double CalculateLotSize(double entryPrice, int slPips)
 {
    double balance = AccountInfoDouble(ACCOUNT_EQUITY);
-   double riskAmountUSD = balance * (InpPositionSizePercent / 100.0);
+   
+   // Auto-reduce risk for small accounts
+   double effectiveRisk = InpPositionSizePercent;
+   if(balance < InpSmallAccountThreshold)
+   {
+      effectiveRisk = MathMin(InpPositionSizePercent, 2.0);  // Max 2% for small accounts
+      if(InpEnableDetailedLogs && effectiveRisk < InpPositionSizePercent)
+         Print("⚠️ Small account: Risk reduced ", InpPositionSizePercent, "% → ", effectiveRisk, "%");
+   }
+   double riskAmountUSD = balance * (effectiveRisk / 100.0);
    
    // Get broker constraints
    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
@@ -1760,17 +1877,30 @@ void OpenPosition(bool isBuy, int slPips, int tpPips, string comment, double cur
    if(InpUseATRBasedSLTP && currentATR > 0)
    {
       double pipVal = GetPipValue();
-      int atrSlPips = (int)MathRound((currentATR * InpATRMultiplierSL) / pipVal);
-      int atrTpPips = (int)MathRound((currentATR * InpATRMultiplierTP) / pipVal);
       
-      // Apply minimum bounds: never go below fixed SL/TP (safety floor)
-      if(atrSlPips < slPips) atrSlPips = slPips;
-      if(atrTpPips < tpPips) atrTpPips = tpPips;
+      // Crypto-adaptive: tighter SL, wider TP (BTC trends hard, needs room)
+      double atrSLMult = IsCryptoSymbol() ? InpCryptoATRMultiplierSL : InpATRMultiplierSL;
+      double atrTPMult = IsCryptoSymbol() ? InpCryptoATRMultiplierTP : InpATRMultiplierTP;
+      
+      int atrSlPips = (int)MathRound((currentATR * atrSLMult) / pipVal);
+      int atrTpPips = (int)MathRound((currentATR * atrTPMult) / pipVal);
+      
+      // Cap: ATR cannot exceed global config fixed pips (prevents blowup)
+      if(atrSlPips > slPips) atrSlPips = slPips;
+      if(atrTpPips > tpPips) atrTpPips = tpPips;
+      
+      // Floor: never go below 50% of fixed pips (too tight = whipsaw)
+      int minSl = (int)MathRound(slPips * 0.5);
+      int minTp = (int)MathRound(tpPips * 0.5);
+      if(atrSlPips < minSl) atrSlPips = minSl;
+      if(atrTpPips < minTp) atrTpPips = minTp;
       
       if(InpEnableDetailedLogs)
       {
          Print("ATR SL/TP: ATR=", DoubleToString(currentATR, _Digits),
-               " | Fixed: SL=", slPips, " TP=", tpPips,
+               " | Mode=", IsCryptoSymbol() ? "CRYPTO" : "FOREX",
+               " (SL×", DoubleToString(atrSLMult,1), " TP×", DoubleToString(atrTPMult,1), ")",
+               " | Fixed(max): SL=", slPips, " TP=", tpPips,
                " → ATR: SL=", atrSlPips, " TP=", atrTpPips, " pips",
                " | R:R=1:", DoubleToString((double)atrTpPips/atrSlPips, 2));
       }
