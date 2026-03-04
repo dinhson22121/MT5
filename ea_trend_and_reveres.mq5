@@ -35,7 +35,7 @@ const int RSI_EXTREME_LOW = 25;
 const double SMALL_WICK_RATIO = 0.3;
 const double BROKER_STOP_BUFFER = 1.1;
 const int ATR_AVERAGE_PERIOD = 20;
-const int MOMENTUM_ADX_BUFFER = 0;
+const double MOMENTUM_MIN_BODY_ATR = 0.5;  // Candle body must be >= 50% of ATR
 
 //--- Input Parameters
 input group "=== PROFILE SELECTION ==="
@@ -44,8 +44,8 @@ input bool InpEnableScalping = true;        // TRUE=Scalping (RSI 7, SL 40, TP 7
 input group "=== Indicator Settings ==="
 input int InpRSIPeriod_Scalp = 7;          // Scalping: Fast RSI
 input int InpRSIPeriod_LongTerm = 14;      // Long-Term: Stable RSI
-input int InpRSIOversold = 35;             // RSI oversold level (35 - tuned for trend pullback)
-input int InpRSIOverbought = 65;           // RSI overbought level (65 - tuned for trend pullback)
+input int InpRSIOversold = 30;             // RSI oversold level
+input int InpRSIOverbought = 70;           // RSI overbought level
 input bool InpUseRSIConfirmation = true;   // Wait for RSI reversal
 input int InpEMAFast = 34;
 input int InpEMASlow = 89;
@@ -92,14 +92,14 @@ input int InpSidewayStopLossPips_LongTerm = 80;   // Long-Term: Match trend SL
 input int InpSidewayTakeProfitPips_LongTerm = 200; // Long-Term: Match trend TP
 input int InpSidewayRangePeriod = 50;          // Bars to calculate range on H4 timeframe
 input int InpSidewayMinRangePips = 200;        // Min range size to trade (skip small ranges)
-input int InpSidewayMaxDistanceToBoundary = 30; // Max distance from support/resistance (tighter)
-input int InpSidewayRSIOversold = 40;      // Sideways RSI buy level (40 - realistic for range market)
-input int InpSidewayRSIOverbought = 60;    // Sideways RSI sell level (60 - realistic for range market)
+input int InpSidewayMaxDistanceToBoundary = 50; // Max distance from support/resistance (pips)
+input int InpSidewayRSIOversold = 30;      // Sideways RSI buy level
+input int InpSidewayRSIOverbought = 70;    // Sideways RSI sell level
 
 input group "=== Momentum Trading Settings ==="
 input bool InpAllowMomentumTrade = true;       // Momentum mode: FOMO breakout trading
-input bool InpMomentumRequireH1 = true;        // Require H1 trend alignment for momentum
-input bool InpMomentumRequirePattern = true;    // Require candle pattern for momentum
+input bool InpMomentumRequireH1 = false;       // Require H1 trend alignment for momentum
+input bool InpMomentumRequirePattern = false;   // Require candle pattern for momentum (false=just direction)
 input int InpMomentumStopLossPips_Scalp = 50;   // Scalping: SL 50 pips
 input int InpMomentumTakeProfitPips_Scalp = 100; // Scalping: TP 100 (R:R = 1:2)
 input int InpMomentumStopLossPips_LongTerm = 80; // Long-Term: Wider SL
@@ -110,8 +110,8 @@ input double InpMomentumATRMultiplier = 1.2;    // HIGH ATR required (was global
 input group "=== Crypto/BTC Adaptation ==="
 input double InpCryptoATRMultiplierSL = 1.0;    // Crypto SL = ATR × this (tighter than forex 1.5x)
 input double InpCryptoATRMultiplierTP = 3.0;    // Crypto TP = ATR × this (wider for big moves)
-input int InpCryptoRSIOversold = 35;            // Crypto RSI oversold (BTC: deeper pullback before entry)
-input int InpCryptoRSIOverbought = 65;          // Crypto RSI overbought (BTC: earlier exit signal)
+input int InpCryptoRSIOversold = 30;            // Crypto RSI oversold
+input int InpCryptoRSIOverbought = 70;          // Crypto RSI overbought
 
 input group "=== Trading Rules ==="
 input int InpMinutesBetwenTrades = 60;        // Cooldown between trades (minutes)
@@ -123,13 +123,13 @@ input bool InpTradeEuropeanSession = true;     // European: 7:00-16:00 UTC (Lond
 input bool InpTradeUSSession = true;           // US: 13:00-22:00 UTC (New York)
 
 input group "=== Additional Filters ==="
-input double InpMinATRMultiplier = 0.8;        // STRENGTHENED: Require 0.8x avg ATR (was 0.5)
+input double InpMinATRMultiplier = 0.5;        // Min ATR vs avg (0.5=easy, 0.8=strict)
 input int InpATRPeriod = 14;
 input int InpMaxSpreadPips = 6;                // Max spread (Exness~2-3, XM~4-6)
 input bool InpUseCandleConfirmation = true;    // Check candle direction
-input bool InpRequireCandlePattern = true;     // STRENGTHENED: Pattern detection REQUIRED (was false)
-input double InpMinPinbarWickRatio = 2.5;      // STRENGTHENED: Min wick/body ratio for Pinbar (was 2.0)
-input double InpMinEngulfingRatio = 1.5;       // STRENGTHENED: Min engulfing ratio (was 1.2)
+input bool InpRequireCandlePattern = false;    // Require exact pattern (Engulfing/Pinbar) - false=just candle direction
+input double InpMinPinbarWickRatio = 2.0;      // Min wick/body ratio for Pinbar
+input double InpMinEngulfingRatio = 1.2;       // Min engulfing body ratio
 
 input group "=== ATR-Based SL/TP (Adaptive) ==="
 input bool InpUseATRBasedSLTP = true;          // Use ATR for SL/TP (adapts to volatility)
@@ -793,10 +793,10 @@ void OnTick()
    if(InpEnableDetailedLogs)
       Print("\n--- NEW BAR: ", TimeToString(currentBarTime), " ---");
    
-   double rsi[], emaFast[], emaSlow[], atr[], adxMain[];
+   double rsi[], emaFast[], emaSlow[], atr[], adxMain[], diPlus[], diMinus[];
    long volume[];
    
-   if(!GetIndicatorValues(rsi, emaFast, emaSlow, atr, adxMain, volume))
+   if(!GetIndicatorValues(rsi, emaFast, emaSlow, atr, adxMain, diPlus, diMinus, volume))
    {
       Print("WARNING: Failed to get indicator values");
       return;
@@ -805,24 +805,28 @@ void OnTick()
    if(!CheckTradingConditions())
       return;
    
-   AnalyzeAndTrade(rsi, emaFast[0], emaSlow[0], atr[0], adxMain[0], (double)volume[0]);
+   AnalyzeAndTrade(rsi, emaFast[0], emaSlow[0], atr[0], adxMain[0], diPlus[0], diMinus[0], (double)volume[0]);
 }
 
 //+------------------------------------------------------------------+
 bool GetIndicatorValues(double &rsi[], double &emaFast[], double &emaSlow[], 
-                        double &atr[], double &adxMain[], long &volume[])
+                        double &atr[], double &adxMain[], double &diPlus[], double &diMinus[], long &volume[])
 {
    ArraySetAsSeries(rsi, true);
    ArraySetAsSeries(emaFast, true);
    ArraySetAsSeries(emaSlow, true);
    ArraySetAsSeries(atr, true);
    ArraySetAsSeries(adxMain, true);
+   ArraySetAsSeries(diPlus, true);
+   ArraySetAsSeries(diMinus, true);
    
    if(CopyBuffer(g_handleRSI, 0, 0, 5, rsi) != 5) return false;        // Need more bars for confirmation
    if(CopyBuffer(g_handleEMAFast, 0, 0, 3, emaFast) != 3) return false;
    if(CopyBuffer(g_handleEMASlow, 0, 0, 3, emaSlow) != 3) return false;
    if(CopyBuffer(g_handleATR, 0, 0, 3, atr) != 3) return false;
    if(CopyBuffer(g_handleADX, 0, 0, 3, adxMain) != 3) return false;
+   if(CopyBuffer(g_handleADX, 1, 0, 3, diPlus) != 3) return false;     // +DI buffer
+   if(CopyBuffer(g_handleADX, 2, 0, 3, diMinus) != 3) return false;    // -DI buffer
    
    ArraySetAsSeries(volume, true);
    if(CopyTickVolume(_Symbol, PERIOD_M15, 1, InpVolumePeriod + 1, volume) <= 0)
@@ -1061,7 +1065,7 @@ void LogTradeEvent(string stage, string comment, bool isBuy, double price, doubl
 
 //+------------------------------------------------------------------+
 void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow, 
-                     double atr, double adx, double currentVolume)
+                     double atr, double adx, double diPlus, double diMinus, double currentVolume)
 {
    // Calculate average volume (used for pattern confirmation)
    double avgVolume = 0;
@@ -1154,13 +1158,15 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    int effectiveRSIOversold = IsCryptoSymbol() ? InpCryptoRSIOversold : InpRSIOversold;
    int effectiveRSIOverbought = IsCryptoSymbol() ? InpCryptoRSIOverbought : InpRSIOverbought;
    
-   // Check if we have STRONG MOMENTUM (high vol + high ATR)
+   // Check if we have STRONG MOMENTUM (high vol + high ATR + DI direction)
    bool hasMomentum = false;
    if(InpAllowMomentumTrade)
    {
       bool isHighVolume = (currentVolume > avgVolume * InpMomentumVolumeMultiplier);
       bool isHighATR = (atr > avgATR * InpMomentumATRMultiplier);
-      bool isStrongADX = adx > InpMinADX + MOMENTUM_ADX_BUFFER;
+      // DI direction: confirms trend strength direction (not just ADX magnitude)
+      bool isDIPlusDominant = (diPlus > diMinus);   // Bullish pressure
+      bool isDIMinusDominant = (diMinus > diPlus);   // Bearish pressure
       
       if(InpEnableDetailedLogs)
       {
@@ -1168,24 +1174,24 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
                " (", DoubleToString(currentVolume/MathMax(avgVolume,1), 2), "x/", InpMomentumVolumeMultiplier, "x)",
                " | ATR=", (isHighATR ? "HIGH" : "LOW"),
                " (", DoubleToString(atr/MathMax(avgATR,0.0001), 2), "x/", InpMomentumATRMultiplier, "x)",
-               " | ADX=", (isStrongADX ? "STRONG" : "WEAK"),
-               " (", DoubleToString(adx, 1), "/", (InpMinADX + MOMENTUM_ADX_BUFFER), ")");
+               " | DI+=", DoubleToString(diPlus, 1), " DI-=", DoubleToString(diMinus, 1),
+               " (", (isDIPlusDominant ? "BULLISH" : (isDIMinusDominant ? "BEARISH" : "NEUTRAL")), ")");
       }
       
-      // UPTREND + RSI overbought + HIGH vol + HIGH ATR = Strong buying momentum
-      if(marketState == MARKET_UPTREND && rsi[0] > effectiveRSIOverbought && isHighVolume && isHighATR && isStrongADX)
+      // UPTREND + RSI overbought + HIGH vol + HIGH ATR + DI+ > DI- = Strong buying momentum
+      if(marketState == MARKET_UPTREND && rsi[0] > effectiveRSIOverbought && isHighVolume && isHighATR && isDIPlusDominant)
       {
          hasMomentum = true;
          if(InpEnableDetailedLogs)
-            Print("  >>> MOMENTUM BUY QUALIFIED: All conditions met!");
+            Print("  >>> MOMENTUM BUY QUALIFIED: All conditions met! (DI+ dominant)");
       }
       
-      // DOWNTREND + RSI oversold + HIGH vol + HIGH ATR = Strong selling momentum
-      if(marketState == MARKET_DOWNTREND && rsi[0] < effectiveRSIOversold && isHighVolume && isHighATR && isStrongADX)
+      // DOWNTREND + RSI oversold + HIGH vol + HIGH ATR + DI- > DI+ = Strong selling momentum
+      if(marketState == MARKET_DOWNTREND && rsi[0] < effectiveRSIOversold && isHighVolume && isHighATR && isDIMinusDominant)
       {
          hasMomentum = true;
          if(InpEnableDetailedLogs)
-            Print("  >>> MOMENTUM SELL QUALIFIED: All conditions met!");
+            Print("  >>> MOMENTUM SELL QUALIFIED: All conditions met! (DI- dominant)");
       }
       
       if(!hasMomentum && InpEnableDetailedLogs)
@@ -1195,7 +1201,8 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          if(rsi[0] >= effectiveRSIOversold && rsi[0] <= effectiveRSIOverbought) reasons += "RSI=NEUTRAL ";
          if(!isHighVolume) reasons += "Vol=LOW ";
          if(!isHighATR) reasons += "ATR=LOW ";
-         if(!isStrongADX) reasons += "ADX=WEAK ";
+         if(marketState == MARKET_UPTREND && !isDIPlusDominant) reasons += "DI+=WEAK(need DI+>DI-) ";
+         if(marketState == MARKET_DOWNTREND && !isDIMinusDominant) reasons += "DI-=WEAK(need DI->DI+) ";
          Print(reasons);
       }
    } // end if(InpAllowMomentumTrade)
@@ -1306,7 +1313,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          }
          
          // RSI Confirmation: MUST be turning up (reversal started)
-         bool rsiConfirmed = !InpUseRSIConfirmation || (rsi[0] > rsi[1] && rsi[1] <= rsi[2]);
+         bool rsiConfirmed = !InpUseRSIConfirmation || (rsi[0] > rsi[1]);
          
          if(!rsiConfirmed)
          {
@@ -1365,7 +1372,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          }
          
          // RSI Confirmation: MUST be turning down (reversal started)
-         bool rsiConfirmed = !InpUseRSIConfirmation || (rsi[0] < rsi[1] && rsi[1] >= rsi[2]);
+         bool rsiConfirmed = !InpUseRSIConfirmation || (rsi[0] < rsi[1]);
          
          if(!rsiConfirmed)
          {
@@ -1401,28 +1408,56 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       }
    }
    
-   // MOMENTUM SIGNALS (Optimized - With H1 + Pattern Confirmation)
+   // MOMENTUM SIGNALS (DI direction + Candle body size confirmation)
    if(InpAllowMomentumTrade && hasMomentum)
    {
-      // UPTREND + RSI overbought + HIGH volume + HIGH ATR -> Strong BUY momentum
-      if(marketState == MARKET_UPTREND && InpAllowTrendingBuy && rsi[0] > effectiveRSIOverbought)
+      // hasMomentum already guarantees: correct market state + RSI extreme + high volume + high ATR + DI direction
+      // Signal phase only adds: H1 (optional), candle body size check
+      
+      // BUY: UPTREND momentum confirmed
+      if(marketState == MARKET_UPTREND && InpAllowTrendingBuy)
       {
-         // H1 Confirmation for Momentum (prevents false breakouts)
+         // H1 Confirmation (optional, default OFF)
          if(InpMomentumRequireH1 && !CheckH1TrendAlignment(true))
          {
             if(InpEnableDetailedLogs)
-               Print("BLOCKED: MOMENTUM BUY - H1 not aligned (EMA", InpH1EMAFast, "<EMA", InpH1EMASlow, ")");
+               Print("BLOCKED: MOMENTUM BUY - H1 not aligned");
             LogSignalEvent("REJECT", "Momentum_Buy", "H1NotAligned", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
             return;
          }
          
-         // Pattern Confirmation for Momentum (prevents chasing into reversals)
+         // Candle body size check: last candle must be bullish AND body >= 50% ATR
+         double lastOpen = iOpen(_Symbol, PERIOD_M15, 1);
+         double lastClose = iClose(_Symbol, PERIOD_M15, 1);
+         bool isBullishCandle = (lastClose > lastOpen);
+         double bodySize = MathAbs(lastClose - lastOpen);
+         bool isStrongBody = (bodySize >= atr * MOMENTUM_MIN_BODY_ATR);
+         
+         // Pattern check (optional, default OFF) — if enabled, requires Engulfing/Pinbar
          if(InpMomentumRequirePattern && !CheckCandlePattern(true, currentVolume, avgVolume))
          {
             if(InpEnableDetailedLogs)
                Print("BLOCKED: MOMENTUM BUY - No bullish candle pattern");
             LogSignalEvent("REJECT", "Momentum_Buy", "PatternMissing", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
             return;
+         }
+         else if(!InpMomentumRequirePattern)
+         {
+            if(!isBullishCandle)
+            {
+               if(InpEnableDetailedLogs)
+                  Print("BLOCKED: MOMENTUM BUY - Last candle not bullish");
+               LogSignalEvent("REJECT", "Momentum_Buy", "CandleDirection", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+               return;
+            }
+            if(!isStrongBody)
+            {
+               if(InpEnableDetailedLogs)
+                  Print("BLOCKED: MOMENTUM BUY - Candle body too small (", DoubleToString(bodySize, _Digits), 
+                        " < ", DoubleToString(atr * MOMENTUM_MIN_BODY_ATR, _Digits), " = 50% ATR)");
+               LogSignalEvent("REJECT", "Momentum_Buy", "BodyTooSmall", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+               return;
+            }
          }
          
          if(InpEnableDetailedLogs)
@@ -1431,35 +1466,58 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             Print("  RSI: ", DoubleToString(rsi[0], 1), " (>", effectiveRSIOverbought, ")");
             Print("  Volume: ", DoubleToString(currentVolume/avgVolume, 2), "x avg (HIGH)");
             Print("  ATR: ", DoubleToString(atr/avgATR, 2), "x avg (HIGH)");
-            Print("  ADX: ", DoubleToString(adx, 1), " (strong trend)");
-            Print("  H1: ", InpMomentumRequireH1 ? "ALIGNED ✅" : "SKIP");
-            Print("  Pattern: ", InpMomentumRequirePattern ? "CONFIRMED ✅" : "SKIP");
-            Print("  Crypto: ", IsCryptoSymbol() ? "YES (adaptive ATR)" : "NO");
+            Print("  DI+: ", DoubleToString(diPlus, 1), " > DI-: ", DoubleToString(diMinus, 1), " ✅");
+            Print("  Candle Body: ", DoubleToString(bodySize/_Digits, 1), " (", DoubleToString(bodySize/atr*100, 0), "% ATR) ✅");
          }
          LogSignalEvent("SIGNAL", "Momentum_Buy", "MomentumConfirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
          OpenPosition(true, GetMomentumStopLossPips(), GetMomentumTakeProfitPips(), "Momentum_Buy", atr);
          return;
       }
       
-      // DOWNTREND + RSI oversold + HIGH volume + HIGH ATR -> Strong SELL momentum
-      if(marketState == MARKET_DOWNTREND && InpAllowTrendingSell && rsi[0] < effectiveRSIOversold)
+      // SELL: DOWNTREND momentum confirmed
+      if(marketState == MARKET_DOWNTREND && InpAllowTrendingSell)
       {
-         // H1 Confirmation for Momentum
+         // H1 Confirmation (optional, default OFF)
          if(InpMomentumRequireH1 && !CheckH1TrendAlignment(false))
          {
             if(InpEnableDetailedLogs)
-               Print("BLOCKED: MOMENTUM SELL - H1 not aligned (EMA", InpH1EMAFast, ">EMA", InpH1EMASlow, ")");
+               Print("BLOCKED: MOMENTUM SELL - H1 not aligned");
             LogSignalEvent("REJECT", "Momentum_Sell", "H1NotAligned", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
             return;
          }
          
-         // Pattern Confirmation for Momentum
+         // Candle body size check: last candle must be bearish AND body >= 50% ATR
+         double lastOpen = iOpen(_Symbol, PERIOD_M15, 1);
+         double lastClose = iClose(_Symbol, PERIOD_M15, 1);
+         bool isBearishCandle = (lastClose < lastOpen);
+         double bodySize = MathAbs(lastClose - lastOpen);
+         bool isStrongBody = (bodySize >= atr * MOMENTUM_MIN_BODY_ATR);
+         
+         // Pattern check (optional, default OFF)
          if(InpMomentumRequirePattern && !CheckCandlePattern(false, currentVolume, avgVolume))
          {
             if(InpEnableDetailedLogs)
                Print("BLOCKED: MOMENTUM SELL - No bearish candle pattern");
             LogSignalEvent("REJECT", "Momentum_Sell", "PatternMissing", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
             return;
+         }
+         else if(!InpMomentumRequirePattern)
+         {
+            if(!isBearishCandle)
+            {
+               if(InpEnableDetailedLogs)
+                  Print("BLOCKED: MOMENTUM SELL - Last candle not bearish");
+               LogSignalEvent("REJECT", "Momentum_Sell", "CandleDirection", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+               return;
+            }
+            if(!isStrongBody)
+            {
+               if(InpEnableDetailedLogs)
+                  Print("BLOCKED: MOMENTUM SELL - Candle body too small (", DoubleToString(bodySize, _Digits),
+                        " < ", DoubleToString(atr * MOMENTUM_MIN_BODY_ATR, _Digits), " = 50% ATR)");
+               LogSignalEvent("REJECT", "Momentum_Sell", "BodyTooSmall", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+               return;
+            }
          }
          
          if(InpEnableDetailedLogs)
@@ -1468,10 +1526,8 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             Print("  RSI: ", DoubleToString(rsi[0], 1), " (< ", effectiveRSIOversold, ")");
             Print("  Volume: ", DoubleToString(currentVolume/avgVolume, 2), "x avg (HIGH)");
             Print("  ATR: ", DoubleToString(atr/avgATR, 2), "x avg (HIGH)");
-            Print("  ADX: ", DoubleToString(adx, 1), " (strong trend)");
-            Print("  H1: ", InpMomentumRequireH1 ? "ALIGNED ✅" : "SKIP");
-            Print("  Pattern: ", InpMomentumRequirePattern ? "CONFIRMED ✅" : "SKIP");
-            Print("  Crypto: ", IsCryptoSymbol() ? "YES (adaptive ATR)" : "NO");
+            Print("  DI-: ", DoubleToString(diMinus, 1), " > DI+: ", DoubleToString(diPlus, 1), " ✅");
+            Print("  Candle Body: ", DoubleToString(bodySize/_Digits, 1), " (", DoubleToString(bodySize/atr*100, 0), "% ATR) ✅");
          }
          LogSignalEvent("SIGNAL", "Momentum_Sell", "MomentumConfirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
          OpenPosition(false, GetMomentumStopLossPips(), GetMomentumTakeProfitPips(), "Momentum_Sell", atr);
@@ -1541,11 +1597,14 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             return;
          }
          
-         // Filter 2: Price rejection confirmation at support
-         if(!CheckPriceRejection(true, rangeLow, rangeHigh))
+         // Filter 2: Price rejection OR candlestick pattern (need at least one)
+         bool hasRejection = CheckPriceRejection(true, rangeLow, rangeHigh);
+         bool hasPattern = CheckCandlePattern(true, currentVolume, avgVolume);
+         
+         if(!hasRejection && !hasPattern)
          {
             if(InpEnableDetailedLogs)
-               Print("BLOCKED: Sideways BUY - no price rejection at support");
+               Print("BLOCKED: Sideways BUY - no price rejection AND no candle pattern");
             return;
          }
          
@@ -1556,14 +1615,6 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          {
             if(InpEnableDetailedLogs)
                Print("WAITING: Sideways BUY but RSI not confirmed");
-            return;
-         }
-         
-         // Filter 4: Candlestick pattern
-         if(!CheckCandlePattern(true, currentVolume, avgVolume))
-         {
-            if(InpEnableDetailedLogs)
-               Print("BLOCKED: Sideways BUY but no valid candlestick pattern");
             return;
          }
          
@@ -1602,11 +1653,14 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             return;
          }
          
-         // Filter 2: Price rejection confirmation at resistance
-         if(!CheckPriceRejection(false, rangeLow, rangeHigh))
+         // Filter 2: Price rejection OR candlestick pattern (need at least one)
+         bool hasRejection = CheckPriceRejection(false, rangeLow, rangeHigh);
+         bool hasPattern = CheckCandlePattern(false, currentVolume, avgVolume);
+         
+         if(!hasRejection && !hasPattern)
          {
             if(InpEnableDetailedLogs)
-               Print("BLOCKED: Sideways SELL - no price rejection at resistance");
+               Print("BLOCKED: Sideways SELL - no price rejection AND no candle pattern");
             return;
          }
          
@@ -1617,14 +1671,6 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          {
             if(InpEnableDetailedLogs)
                Print("WAITING: Sideways SELL but RSI not confirmed");
-            return;
-         }
-         
-         // Filter 4: Candlestick pattern
-         if(!CheckCandlePattern(false, currentVolume, avgVolume))
-         {
-            if(InpEnableDetailedLogs)
-               Print("BLOCKED: Sideways SELL but no valid candlestick pattern");
             return;
          }
          
