@@ -57,6 +57,7 @@ input group "=== Risk Management - SCALPING ==="
 input double InpPositionSizePercent = 3.0;    // Risk 3% per trade (Exness Standard)
 input double InpMaxLotSize = 1.5;             // Max lot size limit (0=no limit)
 input double InpMaxSafetyPercent = 10.0;      // Max risk % hard limit (safety cap)
+input double InpMaxMarginPercent = 30.0;      // Max margin % per trade (30=safe, prevents overleveraging)
 input double InpRiskBasedThreshold = 300.0;    // Balance >= this → use risk% lot sizing; below → use min lot
 input int InpStopLossPips_Scalp = 50;         // Scalping: SL 50 pips
 input int InpTakeProfitPips_Scalp = 100;      // Scalping: TP 100 (R:R = 1:2)
@@ -104,8 +105,6 @@ input double InpMomentumVolumeMultiplier = 1.5; // HIGH volume required (was glo
 input double InpMomentumATRMultiplier = 1.2;    // HIGH ATR required (was global 0.5)
 
 input group "=== Crypto/BTC Adaptation ==="
-input double InpCryptoATRMultiplierSL = 1.0;    // Crypto SL = ATR × this (tighter than forex 1.5x)
-input double InpCryptoATRMultiplierTP = 3.0;    // Crypto TP = ATR × this (wider for big moves)
 input int InpCryptoRSIOversold = 30;            // Crypto RSI oversold
 input int InpCryptoRSIOverbought = 70;          // Crypto RSI overbought
 
@@ -126,10 +125,7 @@ input bool InpRequireCandlePattern = false;    // Require exact pattern (Engulfi
 input double InpMinPinbarWickRatio = 2.0;      // Min wick/body ratio for Pinbar
 input double InpMinEngulfingRatio = 1.2;       // Min engulfing body ratio
 
-input group "=== ATR-Based SL/TP (Adaptive) ==="
-input bool InpUseATRBasedSLTP = true;          // Use ATR for SL/TP (adapts to volatility)
-input double InpATRMultiplierSL = 1.5;         // SL = ATR × this (e.g., ATR $5 → SL $7.5)
-input double InpATRMultiplierTP = 2.5;         // TP = ATR × this (R:R ≈ 1:1.67)
+input group "=== Trailing Stop (ATR-Based) ==="
 input bool InpUseATRTrailing = true;           // Use ATR for trailing distance (adaptive)
 input double InpTrailingATRMultiplier = 1.0;   // Trail distance = ATR × this
 
@@ -231,8 +227,7 @@ int OnInit()
    Print("   Safety limit: ", DoubleToString(InpMaxSafetyPercent,1), "% max risk per trade");
    Print("=====================================");
    Print("🔧 v4.1 PHASE 2: Strategy Optimization");
-   Print("   ATR-based SL/TP: ", InpUseATRBasedSLTP ? "ENABLED" : "DISABLED",
-         " (SL=", InpATRMultiplierSL, "x TP=", InpATRMultiplierTP, "x)");
+   Print("   SL/TP: FIXED (Scalp: 50/100, LongTerm: 80/200)");
    Print("   H1 Confirmation: ", InpUseH1Confirmation ? "ENABLED" : "DISABLED",
          " (EMA", InpH1EMAFast, "/", InpH1EMASlow, ")");
    Print("   ATR Trailing: ", InpUseATRTrailing ? "ENABLED" : "DISABLED",
@@ -1254,16 +1249,14 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          h1Info = (h1f[0] > h1s[0]) ? "UP" : "DOWN";
    }
    
-   string slTpMode = InpUseATRBasedSLTP ? "ATR" : "FIXED";
-   
    Comment(
-      "=== ", _Symbol, " - v4.1 PHASE 2 ===", "\n",
-      "🎯 TARGET: 70% WR | ATR SL/TP | H1 MTF", "\n",
+      "=== ", _Symbol, " - v4.2 FIXED SL/TP ===", "\n",
+      "🎯 TARGET: 70% WR | FIXED SL/TP | H1 MTF", "\n",
       "Balance: $", DoubleToString(balance, 2), " | Risk: ", InpPositionSizePercent, "%", "\n",
       "Session: ", sessionInfo, " | UTC: ", TimeToString(TimeGMT(), TIME_MINUTES), "\n",
       "Market: ", marketStateStr, " | H1: ", h1Info, " | ADX: ", DoubleToString(adx, 1), "\n",
       "RSI: ", DoubleToString(rsi[0], 1), " | Vol: ", volumeStatus, " | ATR: ", atrStatus, "\n",
-      "SL/TP: ", slTpMode, " | ATR=$", DoubleToString(atr, 2), "\n",
+      "SL/TP: FIXED | ATR=$", DoubleToString(atr, 2), "\n",
       "Positions: ", CountOpenPositions(), "/", GetMaxPositions(), "\n",
       "Trend: BUY=", (InpAllowTrendingBuy ? "YES" : "NO"), " SELL=", (InpAllowTrendingSell ? "YES" : "NO"),
       " | Sideway: ", (InpAllowSidewayTrade ? "YES" : "NO")
@@ -1752,102 +1745,40 @@ double CalculateLotSize(double entryPrice, int slPips)
    double riskAmountUSD = balance * (effectiveRisk / 100.0);
    
    // ==================================================================
-   // CRITICAL FIX v4.0.2: Use broker's actual contract size!
-   // DO NOT hardcode $10 - varies by broker (standard/mini/micro lots)
+   // Calculate money per pip per lot using OrderCalcProfit()
+   // This is 100% accurate for ALL account types (USD, cent, micro)
+   // Because it uses broker's internal calculation
    // ==================================================================
-   
-   // Get tick value from broker (most accurate method)
-   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   
-   // Calculate money per pip based on tick value
-   // Pip size = pipValue from GetPipValue() (e.g., 0.0001 for EURUSD)
-   // Tick size = smallest price movement (usually same as pip, or 0.00001)
    double moneyPerPipPerLot = 0;
    
-   if(tickSize > 0 && tickValue > 0)
+   // Method 1: OrderCalcProfit (most reliable - works for any account type)
+   double profitBuy = 0, profitSell = 0;
+   bool calcOK = false;
+   
+   if(OrderCalcProfit(ORDER_TYPE_BUY, _Symbol, 1.0, entryPrice, entryPrice + pipValue, profitBuy))
    {
-      // Calculate pip value from tick value
-      // moneyPerPipPerLot = tickValue * (pipValue / tickSize)
-      moneyPerPipPerLot = tickValue * (pipValue / tickSize);
-      
-      // For most forex: tickSize = 0.00001, pipValue = 0.0001
-      // → moneyPerPipPerLot = tickValue * (0.0001 / 0.00001) = tickValue * 10
-      
-      // For JPY: tickSize = 0.001, pipValue = 0.01
-      // → moneyPerPipPerLot = tickValue * (0.01 / 0.001) = tickValue * 10
+      moneyPerPipPerLot = MathAbs(profitBuy);
+      calcOK = true;
    }
-   else
+   else if(OrderCalcProfit(ORDER_TYPE_SELL, _Symbol, 1.0, entryPrice, entryPrice - pipValue, profitSell))
    {
-      // Fallback: Calculate based on contract size and pip value
-      // This works for most instruments
-      
-      if(StringFind(symbol, "XAU") >= 0 || StringFind(symbol, "GOLD") >= 0)
-      {
-         // Gold: contractSize = 100 oz, pipValue = 0.10
-         // moneyPerPip = 100 * 0.10 = $10
-         moneyPerPipPerLot = contractSize * pipValue;
-      }
-      else if(StringFind(symbol, "BTC") >= 0)
-      {
-         // Bitcoin: contractSize varies (1 BTC or 0.01 BTC)
-         // pipValue = 10.0
-         // For 1 BTC: 1 * 10 = $10 per pip
-         // For 0.01 BTC: 0.01 * 10 = $0.10 per pip
-         moneyPerPipPerLot = contractSize * pipValue;
-      }
-      else if(StringFind(symbol, "US30") >= 0 || StringFind(symbol, "DOW") >= 0 || 
-              StringFind(symbol, "DJ30") >= 0 || StringFind(symbol, "NI225") >= 0 || 
-              StringFind(symbol, "NIKKEI") >= 0 || StringFind(symbol, "JPN225") >= 0)
-      {
-         // Indices: contractSize = $ value per point
-         // pipValue = 1.0 (1 pip = 1 point)
-         moneyPerPipPerLot = contractSize * pipValue;
-      }
-      else
-      {
-         // Forex: contractSize = units (100,000 standard, 10,000 mini, 1,000 micro)
-         // pipValue = 0.0001 (or 0.01 for JPY)
-         
-         string quoteCurrency = SymbolInfoString(_Symbol, SYMBOL_CURRENCY_PROFIT);
-         
-         if(quoteCurrency == "USD")
-         {
-            // USD quote: Direct calculation
-            // Standard lot (100,000): 100,000 * 0.0001 = $10
-            // Mini lot (10,000): 10,000 * 0.0001 = $1
-            // Micro lot (1,000): 1,000 * 0.0001 = $0.1
-            moneyPerPipPerLot = contractSize * pipValue;
-         }
-         else if(quoteCurrency == "JPY")
-         {
-            // JPY pairs: Need conversion to USD
-            // 1 lot * 0.01 pip = 1,000 JPY (for 100,000 units)
-            // Convert: 1,000 JPY / rate
-            double jpy_per_pip = contractSize * pipValue; // e.g., 100,000 * 0.01 = 1,000
-            if(entryPrice > 0)
-               moneyPerPipPerLot = jpy_per_pip / entryPrice;
-            else
-               moneyPerPipPerLot = contractSize * pipValue; // Fallback
-         }
-         else
-         {
-            // Other quote currencies: Use contract size * pip value
-            // May be slightly inaccurate without conversion, but close enough
-            moneyPerPipPerLot = contractSize * pipValue;
-         }
-      }
+      moneyPerPipPerLot = MathAbs(profitSell);
+      calcOK = true;
    }
    
-   // Safety check
-   if(moneyPerPipPerLot <= 0)
+   // Method 2: Fallback to tickValue formula if OrderCalcProfit fails
+   if(!calcOK || moneyPerPipPerLot <= 0)
    {
-      Print("ERROR: Could not calculate pip value for ", _Symbol);
-      Print("  tickSize=", tickSize, " tickValue=", tickValue);
-      Print("  contractSize=", contractSize, " pipValue=", pipValue);
-      Print("  Using fallback: contractSize * pipValue");
-      moneyPerPipPerLot = contractSize * pipValue;
-      if(moneyPerPipPerLot <= 0) moneyPerPipPerLot = 1.0;
+      double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+      double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+      
+      if(tickSize > 0 && tickValue > 0)
+         moneyPerPipPerLot = tickValue * (pipValue / tickSize);
+      else
+         moneyPerPipPerLot = contractSize * pipValue;
+      
+      if(InpEnableDetailedLogs)
+         Print("⚠️ OrderCalcProfit failed, using tickValue fallback: ", DoubleToString(moneyPerPipPerLot, 4));
    }
    
    // ==================================================================
@@ -1890,16 +1821,29 @@ double CalculateLotSize(double entryPrice, int slPips)
       double safeLotSize = maxRiskAmount / (slPips * moneyPerPipPerLot);
       safeLotSize = MathFloor(safeLotSize / lotStep) * lotStep;
       
-      // If safe lot < min lot, allow min lot with warning (small account override)
+      // If safe lot < min lot, check if min lot risk is still acceptable
       if(safeLotSize < minLot)
       {
          double minLotRisk = minLot * slPips * moneyPerPipPerLot;
          double minLotRiskPct = (minLotRisk / balance) * 100.0;
-         Print("⚠️ SMALL ACCOUNT OVERRIDE: Min lot ", DoubleToString(minLot,2), 
-               " risks $", DoubleToString(minLotRisk,2), 
-               " (", DoubleToString(minLotRiskPct,1), "% of equity)");
-         Print("   Safety limit ", DoubleToString(InpMaxSafetyPercent,1), 
-               "% exceeded but using min lot to allow trading");
+         
+         // BLOCK trade if min lot risks more than safety limit
+         // This prevents Gold/expensive instruments from blowing small/cent accounts
+         if(minLotRiskPct > InpMaxSafetyPercent)
+         {
+            Print("🛑 BLOCKED: Even min lot ", DoubleToString(minLot,2), 
+                  " risks ", DoubleToString(minLotRiskPct,1), "% of equity (",
+                  DoubleToString(minLotRisk,2), " / ", DoubleToString(balance,2), ")");
+            Print("   Max allowed: ", DoubleToString(InpMaxSafetyPercent,1), 
+                  "% | This symbol is too expensive for current balance");
+            Print("   → Trade CANCELLED. Increase balance or trade cheaper instrument.");
+            return -1;  // Signal to caller: do not trade
+         }
+         
+         // Min lot risk is within safety limit - allow with warning
+         Print("⚠️ MIN LOT MODE: ", DoubleToString(minLot,2), 
+               " lot risks ", DoubleToString(minLotRiskPct,1), "% (",
+               DoubleToString(minLotRisk,2), " of ", DoubleToString(balance,2), ")");
          safeLotSize = minLot;
       }
       else
@@ -1951,46 +1895,81 @@ double CalculateLotSize(double entryPrice, int slPips)
 //+------------------------------------------------------------------+
 void OpenPosition(bool isBuy, int slPips, int tpPips, string comment, double currentATR = 0)
 {
-   // ATR-based SL/TP: Override fixed pips with adaptive ATR distances
-   if(InpUseATRBasedSLTP && currentATR > 0)
-   {
-      double pipVal = GetPipValue();
-      
-      // Crypto-adaptive: tighter SL, wider TP (BTC trends hard, needs room)
-      double atrSLMult = IsCryptoSymbol() ? InpCryptoATRMultiplierSL : InpATRMultiplierSL;
-      double atrTPMult = IsCryptoSymbol() ? InpCryptoATRMultiplierTP : InpATRMultiplierTP;
-      
-      int atrSlPips = (int)MathRound((currentATR * atrSLMult) / pipVal);
-      int atrTpPips = (int)MathRound((currentATR * atrTPMult) / pipVal);
-      
-      // Cap: ATR can expand up to 150% of fixed pips (allows room in high-vol)
-      int maxSl = (int)MathRound(slPips * 1.5);
-      int maxTp = (int)MathRound(tpPips * 1.5);
-      if(atrSlPips > maxSl) atrSlPips = maxSl;
-      if(atrTpPips > maxTp) atrTpPips = maxTp;
-      
-      // Floor: never go below 40% of fixed pips (too tight = whipsaw)
-      int minSl = (int)MathRound(slPips * 0.4);
-      int minTp = (int)MathRound(tpPips * 0.4);
-      if(atrSlPips < minSl) atrSlPips = minSl;
-      if(atrTpPips < minTp) atrTpPips = minTp;
-      
-      if(InpEnableDetailedLogs)
-      {
-         Print("ATR SL/TP: ATR=", DoubleToString(currentATR, _Digits),
-               " | Mode=", IsCryptoSymbol() ? "CRYPTO" : "FOREX",
-               " (SL×", DoubleToString(atrSLMult,1), " TP×", DoubleToString(atrTPMult,1), ")",
-               " | Fixed(max): SL=", slPips, " TP=", tpPips,
-               " → ATR: SL=", atrSlPips, " TP=", atrTpPips, " pips",
-               " | R:R=1:", DoubleToString((double)atrTpPips/atrSlPips, 2));
-      }
-      
-      slPips = atrSlPips;
-      tpPips = atrTpPips;
-   }
-   
    double price = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double lot = CalculateLotSize(price, slPips);
+   
+   // CalculateLotSize returns -1 if even min lot is too risky for current balance
+   if(lot < 0)
+   {
+      Print("TRADE CANCELLED: Lot sizing returned -1 (instrument too expensive for balance)");
+      LogTradeEvent("CANCEL", comment, isBuy, price, 0, 0, 0, -1, 0);
+      return;
+   }
+   
+   // ================================================================
+   // MARGIN SAFETY CHECK: Universal protection for all account types
+   // Uses broker's OrderCalcMargin() — accurate for cent/micro/standard
+   // ================================================================
+   if(InpMaxMarginPercent > 0)
+   {
+      double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+      double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+      double marginRequired = 0;
+      ENUM_ORDER_TYPE orderType = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      
+      if(OrderCalcMargin(orderType, _Symbol, lot, price, marginRequired))
+      {
+         double marginPercent = (equity > 0) ? (marginRequired / equity * 100.0) : 100.0;
+         
+         if(marginPercent > InpMaxMarginPercent)
+         {
+            // Auto-reduce lot to fit within max margin %
+            double maxMarginAllowed = equity * (InpMaxMarginPercent / 100.0);
+            double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+            double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+            
+            // Estimate reduced lot proportionally
+            double reducedLot = lot * (maxMarginAllowed / marginRequired);
+            reducedLot = MathFloor(reducedLot / lotStep) * lotStep;
+            
+            if(reducedLot < minLot)
+            {
+               // Even min lot exceeds margin limit — check if we can afford it
+               double minMargin = 0;
+               if(OrderCalcMargin(orderType, _Symbol, minLot, price, minMargin))
+               {
+                  double minMarginPct = (equity > 0) ? (minMargin / equity * 100.0) : 100.0;
+                  if(minMarginPct > 50.0)  // Hard limit: min lot uses >50% margin
+                  {
+                     Print("BLOCKED: Min lot margin ", DoubleToString(minMarginPct, 1), 
+                           "% exceeds 50% of equity. Trade cancelled.");
+                     LogTradeEvent("CANCEL", comment, isBuy, price, 0, 0, minLot, -1, 0);
+                     return;
+                  }
+               }
+               reducedLot = minLot;
+            }
+            
+            Print("⚠️ MARGIN SAFETY: Lot reduced ", DoubleToString(lot, 2), " → ", DoubleToString(reducedLot, 2),
+                  " (margin ", DoubleToString(marginPercent, 1), "% > max ", DoubleToString(InpMaxMarginPercent, 1), "%)");
+            Print("   Margin required: ", DoubleToString(marginRequired, 2), 
+                  " | Free margin: ", DoubleToString(freeMargin, 2),
+                  " | Equity: ", DoubleToString(equity, 2));
+            lot = reducedLot;
+         }
+         else if(InpEnableDetailedLogs)
+         {
+            Print("MARGIN CHECK OK: ", DoubleToString(marginPercent, 1), "% of equity",
+                  " (required: ", DoubleToString(marginRequired, 2),
+                  " | free: ", DoubleToString(freeMargin, 2), ")");
+         }
+      }
+      else
+      {
+         Print("WARNING: OrderCalcMargin failed, proceeding with calculated lot");
+      }
+   }
+   
    double sl, tp;
    
    CalculateSLTP_FixedPips(price, isBuy, slPips, tpPips, sl, tp);
