@@ -10,9 +10,7 @@
 //| 2. H1 Multi-Timeframe Confirmation:                              |
 //|    - Requires H1 EMA20/50 trend alignment before M15 entry      |
 //|    - BUY only when H1 uptrend, SELL only when H1 downtrend      |
-//| 3. RSI Levels Tuned:                                             |
-//|    - Trend: 35/65 (was 30/70 - too extreme in strong trends)     |
-//|    - Sideways: 40/60 (was 30/70 - impossible in range market)    |
+//| 3. RSI Levels: 30/70 (all strategies, RSI period=7 hits extremes)|
 //| 4. Pattern Volume: 1.5x (was 2.0x - too strict)                 |
 //| 5. ATR-Based Trailing: Trail distance = 1.0x ATR (adaptive)     |
 //|    - No more fixed 20 pip trail getting stopped by normal moves  |
@@ -30,8 +28,6 @@ CTrade trade;
 
 //--- Constants
 const double EMA_DIFF_PERCENT_THRESHOLD = 0.3;
-const int RSI_EXTREME_THRESHOLD = 75;
-const int RSI_EXTREME_LOW = 25;
 const double SMALL_WICK_RATIO = 0.3;
 const double BROKER_STOP_BUFFER = 1.1;
 const int ATR_AVERAGE_PERIOD = 20;
@@ -114,8 +110,7 @@ input int InpCryptoRSIOversold = 30;            // Crypto RSI oversold
 input int InpCryptoRSIOverbought = 70;          // Crypto RSI overbought
 
 input group "=== Trading Rules ==="
-input int InpMinutesBetwenTrades = 60;        // Cooldown between trades (minutes)
-input int InpCooldownSeconds = 3600;          // Cooldown in seconds (overrides minutes if >0)
+input int InpCooldownSeconds = 3600;          // Cooldown between trades (seconds)
 input bool InpAllowOnCurrentBar = false;      // Allow trading on currently forming bar (for testing)
 input bool InpUseTimeFilter = false;           // Enable session filter
 input bool InpTradeAsianSession = false;       // Asian: 1:00-9:00 UTC (Tokyo)
@@ -297,7 +292,7 @@ int OnInit()
    Print("  ATR: ", InpMinATRMultiplier, "x avg (NORMAL - requires volatility)");
    Print("  Pattern: ", InpRequireCandlePattern ? "REQUIRED ✓" : "OPTIONAL");
    Print("  Spread Max: ", InpMaxSpreadPips > 0 ? IntegerToString(InpMaxSpreadPips) + " pips" : "DISABLED");
-   Print("  Cooldown: ", InpMinutesBetwenTrades, " minutes");
+   Print("  Cooldown: ", InpCooldownSeconds, " seconds (", InpCooldownSeconds/60, " min)");
    Print("------------------------------------");
    Print("TRADING SESSIONS (UTC):");
    if(IsCryptoSymbol())
@@ -911,7 +906,7 @@ bool CheckTradingConditions()
    }
    
    int secondsSinceLastTrade = (int)(TimeCurrent() - g_lastTradeTime);
-   int requiredSeconds = (InpCooldownSeconds > 0) ? InpCooldownSeconds : (InpMinutesBetwenTrades * 60);
+   int requiredSeconds = InpCooldownSeconds;
    
    if(g_lastTradeTime > 0 && secondsSinceLastTrade < requiredSeconds)
    {
@@ -1467,7 +1462,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             Print("  Volume: ", DoubleToString(currentVolume/avgVolume, 2), "x avg (HIGH)");
             Print("  ATR: ", DoubleToString(atr/avgATR, 2), "x avg (HIGH)");
             Print("  DI+: ", DoubleToString(diPlus, 1), " > DI-: ", DoubleToString(diMinus, 1), " ✅");
-            Print("  Candle Body: ", DoubleToString(bodySize/_Digits, 1), " (", DoubleToString(bodySize/atr*100, 0), "% ATR) ✅");
+            Print("  Candle Body: ", DoubleToString(bodySize/GetPipValue(), 1), " pips (", DoubleToString(bodySize/atr*100, 0), "% ATR) ✅");
          }
          LogSignalEvent("SIGNAL", "Momentum_Buy", "MomentumConfirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
          OpenPosition(true, GetMomentumStopLossPips(), GetMomentumTakeProfitPips(), "Momentum_Buy", atr);
@@ -1527,7 +1522,7 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             Print("  Volume: ", DoubleToString(currentVolume/avgVolume, 2), "x avg (HIGH)");
             Print("  ATR: ", DoubleToString(atr/avgATR, 2), "x avg (HIGH)");
             Print("  DI-: ", DoubleToString(diMinus, 1), " > DI+: ", DoubleToString(diPlus, 1), " ✅");
-            Print("  Candle Body: ", DoubleToString(bodySize/_Digits, 1), " (", DoubleToString(bodySize/atr*100, 0), "% ATR) ✅");
+            Print("  Candle Body: ", DoubleToString(bodySize/GetPipValue(), 1), " pips (", DoubleToString(bodySize/atr*100, 0), "% ATR) ✅");
          }
          LogSignalEvent("SIGNAL", "Momentum_Sell", "MomentumConfirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
          OpenPosition(false, GetMomentumStopLossPips(), GetMomentumTakeProfitPips(), "Momentum_Sell", atr);
