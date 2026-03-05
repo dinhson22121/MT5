@@ -1417,9 +1417,14 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          // Candle body size check: last candle must be bullish AND body >= 50% ATR
          double lastOpen = iOpen(_Symbol, PERIOD_M15, 1);
          double lastClose = iClose(_Symbol, PERIOD_M15, 1);
+         double lastHigh = iHigh(_Symbol, PERIOD_M15, 1);
+         double lastLow = iLow(_Symbol, PERIOD_M15, 1);
          bool isBullishCandle = (lastClose > lastOpen);
          double bodySize = MathAbs(lastClose - lastOpen);
          bool isStrongBody = (bodySize >= atr * MOMENTUM_MIN_BODY_ATR);
+         // Wick rejection: upper wick > 35% body = selling pressure, don't buy
+         double upperWick = lastHigh - MathMax(lastOpen, lastClose);
+         bool hasWickRejection = (bodySize > 0 && upperWick > bodySize * 0.35);
          
          // Pattern check (optional, default OFF) — if enabled, requires Engulfing/Pinbar
          if(InpMomentumRequirePattern && !CheckCandlePattern(true, currentVolume, avgVolume))
@@ -1444,6 +1449,14 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
                   Print("BLOCKED: MOMENTUM BUY - Candle body too small (", DoubleToString(bodySize, _Digits), 
                         " < ", DoubleToString(atr * MOMENTUM_MIN_BODY_ATR, _Digits), " = 50% ATR)");
                LogSignalEvent("REJECT", "Momentum_Buy", "BodyTooSmall", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+               return;
+            }
+            if(hasWickRejection)
+            {
+               if(InpEnableDetailedLogs)
+                  Print("BLOCKED: MOMENTUM BUY - Upper wick too long (", DoubleToString(upperWick/GetPipValue(), 1),
+                        " pips > 35% body ", DoubleToString(bodySize/GetPipValue(), 1), " pips) = selling pressure");
+               LogSignalEvent("REJECT", "Momentum_Buy", "WickRejection", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
                return;
             }
          }
@@ -1477,9 +1490,14 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          // Candle body size check: last candle must be bearish AND body >= 50% ATR
          double lastOpen = iOpen(_Symbol, PERIOD_M15, 1);
          double lastClose = iClose(_Symbol, PERIOD_M15, 1);
+         double lastHigh = iHigh(_Symbol, PERIOD_M15, 1);
+         double lastLow = iLow(_Symbol, PERIOD_M15, 1);
          bool isBearishCandle = (lastClose < lastOpen);
          double bodySize = MathAbs(lastClose - lastOpen);
          bool isStrongBody = (bodySize >= atr * MOMENTUM_MIN_BODY_ATR);
+         // Wick rejection: lower wick > 35% body = buying pressure, don't sell
+         double lowerWick = MathMin(lastOpen, lastClose) - lastLow;
+         bool hasWickRejection = (bodySize > 0 && lowerWick > bodySize * 0.35);
          
          // Pattern check (optional, default OFF)
          if(InpMomentumRequirePattern && !CheckCandlePattern(false, currentVolume, avgVolume))
@@ -1504,6 +1522,14 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
                   Print("BLOCKED: MOMENTUM SELL - Candle body too small (", DoubleToString(bodySize, _Digits),
                         " < ", DoubleToString(atr * MOMENTUM_MIN_BODY_ATR, _Digits), " = 50% ATR)");
                LogSignalEvent("REJECT", "Momentum_Sell", "BodyTooSmall", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+               return;
+            }
+            if(hasWickRejection)
+            {
+               if(InpEnableDetailedLogs)
+                  Print("BLOCKED: MOMENTUM SELL - Lower wick too long (", DoubleToString(lowerWick/GetPipValue(), 1),
+                        " pips > 35% body ", DoubleToString(bodySize/GetPipValue(), 1), " pips) = buying pressure");
+               LogSignalEvent("REJECT", "Momentum_Sell", "WickRejection", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
                return;
             }
          }
@@ -2020,9 +2046,6 @@ void OpenPosition(bool isBuy, int slPips, int tpPips, string comment, double cur
 //+------------------------------------------------------------------+
 void ManageOpenPositions()
 {
-   if(GetBreakevenPips() <= 0 && !InpUseTrailingStop)
-      return;
-   
    double pipValue = GetPipValue();
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    
@@ -2059,6 +2082,79 @@ void ManageOpenPositions()
          profitPips = (currentPrice - openPrice) / pipValue;
       else
          profitPips = (openPrice - currentPrice) / pipValue;
+      
+      // ================================================================
+      // STALE POSITION EXIT (MOMENTUM ONLY): Close if price can't
+      // break entry candle after 3 bars. Exception: if all 3 bars
+      // confirm direction (all bearish for SELL, all bullish for BUY)
+      // → momentum still alive, keep position.
+      // ================================================================
+      string posComment = PositionGetString(POSITION_COMMENT);
+      bool isMomentumTrade = (StringFind(posComment, "Momentum") >= 0);
+      
+      if(isMomentumTrade)
+      {
+         datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
+         int entryBarIndex = iBarShift(_Symbol, PERIOD_M15, openTime);
+         
+         // Only check if at least 3 full bars have completed after entry
+         if(entryBarIndex >= 4)  // bar 0=current, 1-3=completed after entry, 4+=entry bar
+         {
+            double entryHigh = iHigh(_Symbol, PERIOD_M15, entryBarIndex);
+            double entryLow  = iLow(_Symbol, PERIOD_M15, entryBarIndex);
+            
+            // Check if any of the 3 bars after entry broke the level
+            bool hasBroken = false;
+            // Check if all 3 bars confirm direction
+            int confirmCount = 0;
+            
+            for(int b = entryBarIndex - 1; b >= entryBarIndex - 3 && b >= 1; b--)
+            {
+               double bOpen = iOpen(_Symbol, PERIOD_M15, b);
+               double bClose = iClose(_Symbol, PERIOD_M15, b);
+               
+               if(posType == POSITION_TYPE_BUY)
+               {
+                  if(iHigh(_Symbol, PERIOD_M15, b) > entryHigh)
+                     hasBroken = true;
+                  if(bClose > bOpen)  // bullish candle
+                     confirmCount++;
+               }
+               if(posType == POSITION_TYPE_SELL)
+               {
+                  if(iLow(_Symbol, PERIOD_M15, b) < entryLow)
+                     hasBroken = true;
+                  if(bClose < bOpen)  // bearish candle
+                     confirmCount++;
+               }
+            }
+            
+            // All 3 candles confirm direction → momentum still alive, keep
+            bool allConfirm = (confirmCount >= 3);
+            
+            if(!hasBroken && !allConfirm)
+            {
+               if(InpEnableDetailedLogs)
+               {
+                  Print("⏰ STALE EXIT: Ticket #", ticket, 
+                        " | ", (posType == POSITION_TYPE_BUY ? "BUY" : "SELL"),
+                        " | 3 bars passed, price didn't break entry candle ",
+                        (posType == POSITION_TYPE_BUY ? "high " : "low "),
+                        DoubleToString(posType == POSITION_TYPE_BUY ? entryHigh : entryLow, digits),
+                        " | Confirm candles: ", confirmCount, "/3",
+                        " | P/L: ", DoubleToString(profitPips, 1), " pips");
+               }
+               trade.PositionClose(ticket);
+               continue;  // Position closed, skip to next
+            }
+            else if(!hasBroken && allConfirm)
+            {
+               if(InpEnableDetailedLogs)
+                  Print("⏰ STALE HOLD: Ticket #", ticket, 
+                        " | Not broken but all 3 candles confirm direction → KEEP");
+            }
+         }
+      }
       
       // Calculate potential new SL
       double newSL = currentSL;
