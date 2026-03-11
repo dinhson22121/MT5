@@ -55,7 +55,7 @@ input double InpSidewayVolumeMultiplier = 0.8;   // Sideways: lower threshold (r
 
 input group "=== Risk Management - SCALPING ==="
 input double InpPositionSizePercent = 3.0;    // Risk 3% per trade (Exness Standard)
-input double InpMaxLotSize = 1.5;             // Max lot size limit (0=no limit)
+input double InpMaxLotSize = 0.5;             // Hard max lot size limit (0=no limit, safety cap)
 input double InpMaxSafetyPercent = 10.0;      // Max risk % hard limit (safety cap)
 input double InpMaxMarginPercent = 30.0;      // Max margin % per trade (30=safe, prevents overleveraging)
 input double InpRiskBasedThreshold = 300.0;    // Balance >= this → use risk% lot sizing; below → use min lot
@@ -188,6 +188,29 @@ int OnInit()
       g_handleEMAFast_H1 == INVALID_HANDLE || g_handleEMASlow_H1 == INVALID_HANDLE)
    {
       Print("ERROR: Failed to create indicators!");
+      return(INIT_FAILED);
+   }
+   
+   // === INPUT VALIDATION: Prevent division-by-zero and invalid config ===
+   if(GetStopLossPips() <= 0 || GetTakeProfitPips() <= 0)
+   {
+      Print("FATAL: Invalid Trend SL/TP settings (SL=", GetStopLossPips(), ", TP=", GetTakeProfitPips(), ") - must be > 0");
+      return(INIT_FAILED);
+   }
+   if(InpAllowSidewayTrade && (GetSidewayStopLossPips() <= 0 || GetSidewayTakeProfitPips() <= 0))
+   {
+      Print("FATAL: Invalid Sideways SL/TP settings (SL=", GetSidewayStopLossPips(), ", TP=", GetSidewayTakeProfitPips(), ") - must be > 0");
+      return(INIT_FAILED);
+   }
+   if(InpAllowMomentumTrade && (GetMomentumStopLossPips() <= 0 || GetMomentumTakeProfitPips() <= 0))
+   {
+      Print("FATAL: Invalid Momentum SL/TP settings (SL=", GetMomentumStopLossPips(), ", TP=", GetMomentumTakeProfitPips(), ") - must be > 0");
+      return(INIT_FAILED);
+   }
+   double initPipValue = GetPipValue();
+   if(initPipValue <= 0)
+   {
+      Print("FATAL: GetPipValue() returned ", initPipValue, " for ", _Symbol, " - cannot trade this symbol");
       return(INIT_FAILED);
    }
    
@@ -432,6 +455,13 @@ double GetPipValue()
    string symbol = _Symbol;
    double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
    int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   
+   // Safety: if broker returns 0 point, use fallback
+   if(point <= 0)
+   {
+      Print("WARNING: SYMBOL_POINT is 0 for ", symbol, " - using fallback 0.0001");
+      point = 0.0001;
+   }
    
    if(StringFind(symbol, "XAU") >= 0 || StringFind(symbol, "GOLD") >= 0)
       return 0.10;
@@ -710,6 +740,15 @@ void CalculateSLTP_FixedPips(double entryPrice, bool isBuy, int slPips, int tpPi
 {
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    double pipValue = GetPipValue();
+   
+   // Safety: prevent zero SL/TP distances
+   if(pipValue <= 0 || slPips <= 0 || tpPips <= 0)
+   {
+      Print("ERROR: Invalid SL/TP params (pipValue=", pipValue, ", slPips=", slPips, ", tpPips=", tpPips, ")");
+      sl = 0;
+      tp = 0;
+      return;
+   }
    
    double slDistance = slPips * pipValue;
    double tpDistance = tpPips * pipValue;
@@ -1717,6 +1756,23 @@ double CalculateLotSize(double entryPrice, int slPips)
 {
    double balance = AccountInfoDouble(ACCOUNT_EQUITY);
    
+   // === SAFETY: Validate critical inputs ===
+   if(balance <= 0)
+   {
+      Print("🛑 BLOCKED: Invalid equity (", DoubleToString(balance, 2), ") - cannot calculate lot size");
+      return -1;
+   }
+   if(slPips <= 0)
+   {
+      Print("🛑 BLOCKED: Invalid SL pips (", slPips, ") - must be > 0");
+      return -1;
+   }
+   if(entryPrice <= 0)
+   {
+      Print("🛑 BLOCKED: Invalid entry price (", DoubleToString(entryPrice, _Digits), ")");
+      return -1;
+   }
+   
    // Get broker constraints
    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
@@ -1724,6 +1780,12 @@ double CalculateLotSize(double entryPrice, int slPips)
    double contractSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
    double pipValue = GetPipValue();
    string symbol = _Symbol;
+   
+   if(pipValue <= 0)
+   {
+      Print("🛑 BLOCKED: GetPipValue() returned ", pipValue, " - cannot calculate lot size");
+      return -1;
+   }
    
    // ================================================================
    // SMALL ACCOUNT MODE: Equity < $300 → use broker minimum lot
@@ -1792,19 +1854,27 @@ double CalculateLotSize(double entryPrice, int slPips)
       calcOK = true;
    }
    
-   // Method 2: Fallback to tickValue formula if OrderCalcProfit fails
+   // If OrderCalcProfit fails, SKIP the trade instead of using unreliable fallback
+   // This prevents wrong lot size calculation (e.g., 1.5 lot instead of 0.22)
+   // Common at market open when prices aren't fully loaded yet
    if(!calcOK || moneyPerPipPerLot <= 0)
    {
-      double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-      double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-      
-      if(tickSize > 0 && tickValue > 0)
-         moneyPerPipPerLot = tickValue * (pipValue / tickSize);
-      else
-         moneyPerPipPerLot = contractSize * pipValue;
-      
-      if(InpEnableDetailedLogs)
-         Print("⚠️ OrderCalcProfit failed, using tickValue fallback: ", DoubleToString(moneyPerPipPerLot, 4));
+      Print("🛑 OrderCalcProfit() FAILED - cannot calculate accurate lot size");
+      Print("   Skipping trade to prevent incorrect position sizing");
+      Print("   Will retry on next signal when market data is available");
+      return -1;  // Signal to caller: do not trade
+   }
+   
+   // Sanity check: moneyPerPipPerLot must be reasonable
+   // If too small, lot size becomes astronomically large → overleveraging
+   double expectedLot = riskAmountUSD / (slPips * moneyPerPipPerLot);
+   if(expectedLot > maxLot * 10)
+   {
+      Print("🛑 BLOCKED: moneyPerPipPerLot (", DoubleToString(moneyPerPipPerLot, 6), 
+            ") seems wrong - calculated lot would be ", DoubleToString(expectedLot, 2),
+            " (>", DoubleToString(maxLot * 10, 0), ")");
+      Print("   This likely indicates incorrect broker data. Trade skipped.");
+      return -1;
    }
    
    // ==================================================================
@@ -1812,12 +1882,32 @@ double CalculateLotSize(double entryPrice, int slPips)
    // ==================================================================
    double lotSize = riskAmountUSD / (slPips * moneyPerPipPerLot);
    
-   // Apply user-defined max lot limit (safety cap)
-   if(InpMaxLotSize > 0 && lotSize > InpMaxLotSize)
+   // ==================================================================
+   // DYNAMIC MAX LOT: Scale with equity to prevent overleveraging
+   // Small equity gets small max lot, large equity allows bigger lot
+   // This prevents scenarios like $300 account opening 1.5 lot
+   // ==================================================================
+   double dynamicMaxLot = maxLot; // Start with broker max
+   
+   // Dynamic cap: max lot scales linearly with equity
+   // $300 → 0.15, $500 → 0.25, $1000 → 0.50, $5000 → 2.50, $10000 → 5.0
+   double equityBasedMax = balance / 2000.0;
+   equityBasedMax = MathFloor(equityBasedMax / lotStep) * lotStep;
+   if(equityBasedMax < minLot) equityBasedMax = minLot;
+   
+   // Use the SMALLER of: user cap, equity-based cap
+   if(InpMaxLotSize > 0)
+      dynamicMaxLot = MathMin(InpMaxLotSize, equityBasedMax);
+   else
+      dynamicMaxLot = equityBasedMax;
+   
+   if(lotSize > dynamicMaxLot)
    {
       if(InpEnableDetailedLogs)
-         Print("⚠️ Lot size capped: ", DoubleToString(lotSize,2), " → ", InpMaxLotSize);
-      lotSize = InpMaxLotSize;
+         Print("⚠️ Lot size capped: ", DoubleToString(lotSize,2), " → ", DoubleToString(dynamicMaxLot,2),
+               " (equity-based max: ", DoubleToString(equityBasedMax,2),
+               " | user max: ", (InpMaxLotSize > 0 ? DoubleToString(InpMaxLotSize,2) : "none"), ")");
+      lotSize = dynamicMaxLot;
    }
    
    // Normalize to broker's lot step
@@ -1910,8 +2000,9 @@ double CalculateLotSize(double entryPrice, int slPips)
       Print("    Difference = ", DoubleToString(MathAbs(lotSize * slPips * moneyPerPipPerLot - riskAmountUSD), 2));
       Print("  ---");
       Print("  Min/Max Broker Lot: ", minLot, "/", maxLot);
-      if(InpMaxLotSize > 0)
-         Print("  User Max Lot Cap: ", InpMaxLotSize);
+      Print("  Dynamic Max Lot: ", DoubleToString(dynamicMaxLot, 2), 
+            " (equity-based: ", DoubleToString(equityBasedMax, 2),
+            " | user cap: ", (InpMaxLotSize > 0 ? DoubleToString(InpMaxLotSize,2) : "none"), ")");
       Print("═══════════════════════════════════");
    }
    
@@ -2047,6 +2138,11 @@ void OpenPosition(bool isBuy, int slPips, int tpPips, string comment, double cur
 void ManageOpenPositions()
 {
    double pipValue = GetPipValue();
+   if(pipValue <= 0)
+   {
+      Print("ERROR: GetPipValue() returned 0 in ManageOpenPositions - skipping");
+      return;
+   }
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    
    // Get current ATR for adaptive trailing
