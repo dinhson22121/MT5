@@ -846,35 +846,45 @@ void AnalyzeAndTrade(const double &ema34[], const double &atrBuf[],
    // === Chart Display ===
    string trendStr = h1Uptrend ? "UPTREND" : (h1Downtrend ? "DOWNTREND" : "FLAT");
    string signalStr = buySignal ? ">>> BUY <<<" : (sellSignal ? ">>> SELL <<<" : "No signal");
+   string volStatus = volumeOK ? "OK" : (volumeTooHigh ? "SPIKE-BLOCKED" : "LOW");
+   string volMaxStr = (InpVolumeMaxMultiplier > 0) ? DoubleToString(avgVolume * InpVolumeMaxMultiplier, 0) : "inf";
    
-   Comment(
-      "v5.0 EMA Pullback Trend Following\n",
-      "═══════════════════════════\n",
-      "Balance: $", DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2),
-      " | Equity: $", DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2), "\n",
-      "Symbol: ", _Symbol, " | Positions: ", CountOpenPositions(), "/", GetMaxPositions(), "\n",
-      "Daily trades: ", g_dailyTradeCount, "/", InpMaxTradesPerDay, "\n",
-      "───────────────────────────\n",
-      "H1 Trend: ", trendStr,
-      " (EMA", InpEMA_H1_Fast, "=", DoubleToString(h1Fast[0], _Digits),
-      " vs EMA", InpEMA_H1_Slow, "=", DoubleToString(h1Slow[0], _Digits), ")\n",
-      "M15 EMA", InpEMA_M15, ": ", DoubleToString(m15Ema, _Digits), "\n",
-      "M15 ATR: ", DoubleToString(atr, _Digits),
-      " | Zone: +/-", DoubleToString(pullbackZone, _Digits), "\n",
-      "───────────────────────────\n",
-      "Bar[1]: O=", DoubleToString(barOpen, _Digits),
-      " H=", DoubleToString(barHigh, _Digits),
-      " L=", DoubleToString(barLow, _Digits),
-      " C=", DoubleToString(barClose, _Digits), "\n",
-      "Pullback: ", (pullbackForBuy || pullbackForSell) ? "YES" : "NO",
-      " | Bounce: ", (bounceForBuy || bounceForSell) ? "YES" : "NO",
-      " | Volume: ", volumeOK ? "OK" : (volumeTooHigh ? "SPIKE-BLOCKED" : "LOW"),
-      " (", DoubleToString(currentVolume, 0), " / min=", DoubleToString(avgVolume * InpVolumeMultiplier, 0),
-      " max=", (InpVolumeMaxMultiplier > 0 ? DoubleToString(avgVolume * InpVolumeMaxMultiplier, 0) : "∞"), ")", "\n",
-      "───────────────────────────\n",
-      "Signal: ", signalStr, "\n",
-      "Time: ", TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)
+   string commentStr = StringFormat(
+      "v5.0 EMA Pullback Trend Following\n"
+      "===========================\n"
+      "Balance: $%.2f | Equity: $%.2f\n"
+      "Symbol: %s | Positions: %d/%d\n"
+      "Daily trades: %d/%d\n"
+      "---------------------------\n"
+      "H1 Trend: %s (EMA%d=%s vs EMA%d=%s)\n"
+      "M15 EMA%d: %s\n"
+      "M15 ATR: %s | Zone: +/-%s\n"
+      "---------------------------\n"
+      "Bar[1]: O=%s H=%s L=%s C=%s\n"
+      "Pullback: %s | Bounce: %s | Volume: %s\n"
+      "Vol: %s / min=%s max=%s\n"
+      "---------------------------\n"
+      "Signal: %s\n"
+      "Time: %s",
+      AccountInfoDouble(ACCOUNT_BALANCE), AccountInfoDouble(ACCOUNT_EQUITY),
+      _Symbol, CountOpenPositions(), GetMaxPositions(),
+      g_dailyTradeCount, InpMaxTradesPerDay,
+      trendStr, InpEMA_H1_Fast, DoubleToString(h1Fast[0], _Digits),
+      InpEMA_H1_Slow, DoubleToString(h1Slow[0], _Digits),
+      InpEMA_M15, DoubleToString(m15Ema, _Digits),
+      DoubleToString(atr, _Digits), DoubleToString(pullbackZone, _Digits),
+      DoubleToString(barOpen, _Digits), DoubleToString(barHigh, _Digits),
+      DoubleToString(barLow, _Digits), DoubleToString(barClose, _Digits),
+      ((pullbackForBuy || pullbackForSell) ? "YES" : "NO"),
+      ((bounceForBuy || bounceForSell) ? "YES" : "NO"),
+      volStatus,
+      DoubleToString(currentVolume, 0),
+      DoubleToString(avgVolume * InpVolumeMultiplier, 0),
+      volMaxStr,
+      signalStr,
+      TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)
    );
+   Comment(commentStr);
    
    // === Detailed Log ===
    if(InpEnableDetailedLogs)
