@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
 //|                                              ea_ict_concept.mq5   |
 //|                        Copyright 2026, ICT Concept Strategy       |
-//|                        v1.1 - ICT Smart Money Concept for Gold    |
+//|                        v1.2 - ICT Smart Money Concept for Gold    |
 //+------------------------------------------------------------------+
 //| v1.1 (2026-02-17)                                                |
 //| ICT Smart Money Concept EA for Gold (XAUUSD)                     |
@@ -29,9 +29,10 @@
 //| → Candle pattern → Execute with SL below/above OB               |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
-#property version   "1.00"
+#property version   "1.20"
 #property description "ICT Smart Money Concept - Gold XAUUSD"
 #property description "H4 Structure + M15 Entry | OB + OTE + Liquidity Sweep"
+#property description "v1.2: Relaxed filters - OTE 0.5-0.786, OR logic, sweep tolerance"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -110,14 +111,15 @@ input double InpOBMinBodyRatio = 0.4;        // Min body/range ratio (skip dojis
 input bool   InpRequireOBOverlapOTE = true;  // OB must overlap with OTE zone for entry
 
 input group "=== Optimal Trade Entry (OTE) ==="
-input double InpOTEFibLow = 0.618;           // OTE zone start (Fibonacci level)
+input double InpOTEFibLow = 0.50;            // v1.2: OTE zone start (0.618→0.5 for wider zone)
 input double InpOTEFibHigh = 0.786;          // OTE zone end (Fibonacci level)
 input int    InpOTEMaxAgeBars = 30;           // OTE max age (H4 bars, 0=no limit)
 
 input group "=== Liquidity Sweep ==="
 input bool   InpRequireLiqSweep = true;      // Require liquidity sweep before entry
-input int    InpLiqSweepLookback = 15;       // M15 bars to look back for sweep
-input double InpMinSweepPips = 5.0;          // Min pips beyond swing for valid sweep (wider for XM spread)
+input int    InpLiqSweepLookback = 20;       // v1.2: M15 bars lookback (15→20, ~5hrs)
+input double InpMinSweepPips = 3.0;          // v1.2: Min pips beyond swing (5→3, less strict)
+input double InpSweepCloseTolerance = 3.0;   // v1.2: Pips tolerance for close back near swing level
 
 input group "=== Risk Management ==="
 input double InpRiskPercent = 2.0;           // Risk % per trade
@@ -144,9 +146,9 @@ input double InpPartialTPRR = 1.0;           // Partial TP at this R:R level
 
 input group "=== Entry Confirmation (M15) ==="
 input bool   InpRequireCandlePattern = true; // Require candle pattern for entry
-input double InpMinPinbarWickRatio = 2.5;    // Min wick/body ratio for Pinbar
-input double InpMinEngulfingRatio = 1.5;     // Min body ratio for Engulfing
-input double InpPatternVolumeMultiplier = 1.5; // Volume multiplier for patterns
+input double InpMinPinbarWickRatio = 2.0;    // v1.2: Min wick/body ratio (2.5→2.0)
+input double InpMinEngulfingRatio = 1.2;     // v1.2: Min body ratio (1.5→1.2)
+input double InpPatternVolumeMultiplier = 1.2; // v1.2: Volume multiplier (1.5→1.2)
 
 input group "=== Kill Zones (UTC) ==="
 input bool   InpUseKillZones = true;         // Only trade in Kill Zones
@@ -273,15 +275,16 @@ int OnInit()
    
    //--- Print initialization summary
    Print("====================================");
-   Print("ICT CONCEPT EA v1.1 INITIALIZED");
+   Print("ICT CONCEPT EA v1.2 INITIALIZED");
    Print("====================================");
    Print("Symbol: ", _Symbol, " | Pip Value: ", DoubleToString(GetPipValue(), _Digits));
    Print("Structure TF: H4 | Entry TF: M15");
    Print("Swing Lookback: ", InpSwingLookback, " bars");
    Print("OB Max Age: ", InpOBMaxAge, " H4 bars");
-   Print("OTE Zone: ", DoubleToString(InpOTEFibLow, 3), " - ", DoubleToString(InpOTEFibHigh, 3));
-   Print("Require OB+OTE overlap: ", InpRequireOBOverlapOTE ? "YES" : "NO");
-   Print("Require Liq Sweep: ", InpRequireLiqSweep ? "YES" : "NO");
+   Print("OTE Zone: ", DoubleToString(InpOTEFibLow, 3), " - ", DoubleToString(InpOTEFibHigh, 3), " (v1.2: wider)");
+   Print("Entry Logic: OB OR OTE (v1.2) | OB+OTE overlap pref: ", InpRequireOBOverlapOTE ? "YES" : "NO");
+   Print("Require Liq Sweep: ", InpRequireLiqSweep ? "YES" : "NO", " | Lookback: ", InpLiqSweepLookback, " bars | Tolerance: ", DoubleToString(InpSweepCloseTolerance, 1), " pips");
+   Print("Candle: Engulfing(", DoubleToString(InpMinEngulfingRatio,1), "x) / Pinbar(", DoubleToString(InpMinPinbarWickRatio,1), "x) / StrongClose(60%) | Vol: ", DoubleToString(InpPatternVolumeMultiplier,1), "x");
    Print("Risk: ", DoubleToString(InpRiskPercent, 1), "% | Max Lot: ", DoubleToString(InpMaxLotSize, 2));
    Print("SL/TP: ", InpUseATRBasedSLTP ? "ATR-Based" : "Fixed Pips");
    Print("Min R:R = 1:", DoubleToString(InpMinRiskReward, 1));
@@ -290,7 +293,7 @@ int OnInit()
          " | NY: ", InpUseNYKZ ? "YES" : "NO",
          " | Asian: ", InpUseAsianKZ ? "YES" : "NO");
    Print("Cooldown: ", InpCooldownMinutes, " min | Max Spread: ", InpMaxSpreadPips, " pips");
-   Print("Candle Pattern Required: ", InpRequireCandlePattern ? "YES" : "NO");
+   Print("Patterns: Engulfing + Pinbar + StrongClose (v1.2) | Required: ", InpRequireCandlePattern ? "YES" : "NO");
    Print("Trailing: ", InpUseTrailingStop ? "ON" : "OFF",
          " | ATR Trail: ", InpUseATRTrailing ? "YES" : "NO");
    Print("Partial TP: ", InpUsePartialTP ? "ON" : "OFF",
@@ -548,8 +551,19 @@ bool CheckCandlePattern(bool isBuySignal)
          return true;
       }
       
+      // v1.2: Strong Bullish Close (body > 60% of range, closing in upper 25%)
+      double range1 = high1 - low1;
+      if(isBullish1 && range1 > 0 && body1 / range1 > 0.6 &&
+         close1 > high1 - range1 * 0.25)
+      {
+         if(InpEnableDetailedLogs)
+            Print("✅ STRONG BULLISH CLOSE | Body/Range: ", DoubleToString(body1/range1, 2),
+                  " | Close in top ", DoubleToString((high1-close1)/range1*100, 0), "%");
+         return true;
+      }
+      
       if(InpEnableDetailedLogs)
-         Print("PATTERN REJECT: No bullish pattern (Engulfing/Pinbar)");
+         Print("PATTERN REJECT: No bullish pattern (Engulfing/Pinbar/StrongClose)");
       return false;
    }
    else
@@ -582,8 +596,19 @@ bool CheckCandlePattern(bool isBuySignal)
          return true;
       }
       
+      // v1.2: Strong Bearish Close (body > 60% of range, closing in lower 25%)
+      double range1_s = high1 - low1;
+      if(isBearish1 && range1_s > 0 && body1 / range1_s > 0.6 &&
+         close1 < low1 + range1_s * 0.25)
+      {
+         if(InpEnableDetailedLogs)
+            Print("✅ STRONG BEARISH CLOSE | Body/Range: ", DoubleToString(body1/range1_s, 2),
+                  " | Close in bottom ", DoubleToString((close1-low1)/range1_s*100, 0), "%");
+         return true;
+      }
+      
       if(InpEnableDetailedLogs)
-         Print("PATTERN REJECT: No bearish pattern (Engulfing/Pinbar)");
+         Print("PATTERN REJECT: No bearish pattern (Engulfing/Pinbar/StrongClose)");
       return false;
    }
 }
@@ -1603,10 +1628,12 @@ bool CheckLiquiditySweep(bool lookForBullish)
          return false;
       }
       
-      // Check if any recent bar wicked below the swing low and closed back above
-      for(int i = 1; i <= MathMin(5, InpLiqSweepLookback); i++)
+      // v1.2: Check recent bars for sweep (full lookback, close tolerance)
+      double sweepCloseTol = InpSweepCloseTolerance * pipValue;
+      for(int i = 1; i <= InpLiqSweepLookback; i++)
       {
-         if(low[i] < recentSwingLow - minSweepDistance && close[i] > recentSwingLow)
+         // v1.2: close back NEAR swing level (tolerance) instead of strictly above
+         if(low[i] < recentSwingLow - minSweepDistance && close[i] > recentSwingLow - sweepCloseTol)
          {
             if(InpEnableDetailedLogs)
                Print("✅ SELL-SIDE LIQUIDITY SWEEP: Bar ", i,
@@ -1664,9 +1691,12 @@ bool CheckLiquiditySweep(bool lookForBullish)
          return false;
       }
       
-      for(int i = 1; i <= MathMin(5, InpLiqSweepLookback); i++)
+      // v1.2: Full lookback + close tolerance
+      double sweepCloseTolBear = InpSweepCloseTolerance * pipValue;
+      for(int i = 1; i <= InpLiqSweepLookback; i++)
       {
-         if(high[i] > recentSwingHigh + minSweepDistance && close[i] < recentSwingHigh)
+         // v1.2: close back NEAR swing level (tolerance) instead of strictly below
+         if(high[i] > recentSwingHigh + minSweepDistance && close[i] < recentSwingHigh + sweepCloseTolBear)
          {
             if(InpEnableDetailedLogs)
                Print("✅ BUY-SIDE LIQUIDITY SWEEP: Bar ", i,
@@ -1800,9 +1830,35 @@ void AnalyzeAndTrade()
    if(g_currentBias == ICT_BULLISH)
    {
       // Look for BUY setup
+      // v1.2: Try OB+OTE overlap first, then fallback to OB-only or OTE-only
       obIndex = FindBestOrderBlock(true, oteUpper, oteLower, InpRequireOBOverlapOTE);
       
+      // v1.2: OR logic - accept (price in OTE) OR (price in OB), not necessarily both
+      bool hasValidSetup = false;
+      string setupType = "";
+      
       if(obIndex >= 0 && priceInOTE)
+      {
+         hasValidSetup = true;
+         setupType = "_OB+OTE";
+      }
+      else if(priceInOTE)
+      {
+         // v1.2: Price in OTE but no OB overlap → still valid (OTE-only entry)
+         // Try finding any OB without requiring OTE overlap
+         obIndex = FindBestOrderBlock(true, oteUpper, oteLower, false);
+         hasValidSetup = true;
+         setupType = "_OTE";
+         if(obIndex >= 0) setupType = "_OTE+nearOB";
+      }
+      else if(obIndex >= 0)
+      {
+         // v1.2: Price in OB but not in OTE → still valid (OB-only entry)
+         hasValidSetup = true;
+         setupType = "_OB";
+      }
+      
+      if(hasValidSetup)
       {
          // Check liquidity sweep
          if(CheckLiquiditySweep(true))
@@ -1818,7 +1874,7 @@ void AnalyzeAndTrade()
                else
                   signalReason += "_BOS";
                
-               signalReason += "_OB+OTE";
+               signalReason += setupType;
                
                if(InpRequireLiqSweep)
                   signalReason += "_LiqSweep";
@@ -1831,21 +1887,41 @@ void AnalyzeAndTrade()
       }
       else
       {
-         if(obIndex < 0 && InpEnableDetailedLogs)
-            Print("ICT BUY REJECT: No valid demand OB near price",
-                  InpRequireOBOverlapOTE ? " (require OTE overlap)" : "");
-         if(!priceInOTE && InpEnableDetailedLogs)
+         if(InpEnableDetailedLogs)
             Print("ICT BUY REJECT: Price ", DoubleToString(currentPrice, _Digits),
-                  " not in OTE zone [", DoubleToString(oteLower, _Digits),
-                  " - ", DoubleToString(oteUpper, _Digits), "]");
+                  " not in OTE [", DoubleToString(oteLower, _Digits),
+                  "-", DoubleToString(oteUpper, _Digits),
+                  "] and no demand OB near price");
       }
    }
    else if(g_currentBias == ICT_BEARISH)
    {
       // Look for SELL setup
+      // v1.2: OR logic - same as BUY side
       obIndex = FindBestOrderBlock(false, oteUpper, oteLower, InpRequireOBOverlapOTE);
       
+      bool hasValidSetup_s = false;
+      string setupType_s = "";
+      
       if(obIndex >= 0 && priceInOTE)
+      {
+         hasValidSetup_s = true;
+         setupType_s = "_OB+OTE";
+      }
+      else if(priceInOTE)
+      {
+         obIndex = FindBestOrderBlock(false, oteUpper, oteLower, false);
+         hasValidSetup_s = true;
+         setupType_s = "_OTE";
+         if(obIndex >= 0) setupType_s = "_OTE+nearOB";
+      }
+      else if(obIndex >= 0)
+      {
+         hasValidSetup_s = true;
+         setupType_s = "_OB";
+      }
+      
+      if(hasValidSetup_s)
       {
          if(CheckLiquiditySweep(false))
          {
@@ -1859,7 +1935,7 @@ void AnalyzeAndTrade()
                else
                   signalReason += "_BOS";
                
-               signalReason += "_OB+OTE";
+               signalReason += setupType_s;
                
                if(InpRequireLiqSweep)
                   signalReason += "_LiqSweep";
@@ -1872,13 +1948,11 @@ void AnalyzeAndTrade()
       }
       else
       {
-         if(obIndex < 0 && InpEnableDetailedLogs)
-            Print("ICT SELL REJECT: No valid supply OB near price",
-                  InpRequireOBOverlapOTE ? " (require OTE overlap)" : "");
-         if(!priceInOTE && InpEnableDetailedLogs)
+         if(InpEnableDetailedLogs)
             Print("ICT SELL REJECT: Price ", DoubleToString(currentPrice, _Digits),
-                  " not in OTE zone [", DoubleToString(oteLower, _Digits),
-                  " - ", DoubleToString(oteUpper, _Digits), "]");
+                  " not in OTE [", DoubleToString(oteLower, _Digits),
+                  "-", DoubleToString(oteUpper, _Digits),
+                  "] and no supply OB near price");
       }
    }
    
@@ -1900,13 +1974,19 @@ void AnalyzeAndTrade()
    }
    
    // === STEP 6: Execute Trade ===
-   if(isBuySignal && obIndex >= 0)
+   if(isBuySignal)
    {
-      OpenICTPosition(true, g_orderBlocks[obIndex], currentATR, signalReason);
+      if(obIndex >= 0)
+         OpenICTPosition(true, g_orderBlocks[obIndex], currentATR, signalReason);
+      else
+         OpenICTPosition_NoOB(true, currentATR, signalReason);  // v1.2: OTE-only entry
    }
-   else if(isSellSignal && obIndex >= 0)
+   else if(isSellSignal)
    {
-      OpenICTPosition(false, g_orderBlocks[obIndex], currentATR, signalReason);
+      if(obIndex >= 0)
+         OpenICTPosition(false, g_orderBlocks[obIndex], currentATR, signalReason);
+      else
+         OpenICTPosition_NoOB(false, currentATR, signalReason);  // v1.2: OTE-only entry
    }
    
    // === Update Chart Comment ===
@@ -2172,6 +2252,107 @@ void OpenICTPosition(bool isBuy, const OrderBlock &ob, double currentATR, string
    if(result)
    {
       Print("SUCCESS: ICT Order placed | Ticket: ", trade.ResultOrder());
+      LogTradeEvent("SUCCESS", comment, isBuy, price, sl, tp, lot, (int)trade.ResultRetcode());
+      g_lastTradeTime = TimeCurrent();
+   }
+   else
+   {
+      Print("FAILED: Error ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
+      LogTradeEvent("FAILED", comment, isBuy, price, sl, tp, lot, (int)trade.ResultRetcode());
+   }
+}
+
+//+------------------------------------------------------------------+
+//| v1.2: Open position without OB (OTE-only entry, ATR-based SL)    |
+//+------------------------------------------------------------------+
+void OpenICTPosition_NoOB(bool isBuy, double currentATR, string comment)
+{
+   double price = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double pipValue = GetPipValue();
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   
+   double sl = 0, tp = 0;
+   double slPips = 0, tpPips = 0;
+   
+   // SL from ATR (no OB reference available)
+   if(InpUseATRBasedSLTP && currentATR > 0)
+   {
+      double atrSLDistance = currentATR * InpATRMultiplierSL;
+      slPips = atrSLDistance / pipValue;
+   }
+   else
+   {
+      slPips = InpFixedSLPips;
+   }
+   
+   // Floor
+   if(slPips < InpFixedSLPips) slPips = InpFixedSLPips;
+   
+   double slDistance = slPips * pipValue;
+   if(isBuy) sl = price - slDistance;
+   else      sl = price + slDistance;
+   
+   // TP
+   if(InpUseATRBasedSLTP && currentATR > 0)
+      tpPips = (currentATR * InpATRMultiplierTP) / pipValue;
+   else
+      tpPips = InpFixedTPPips;
+   
+   // Ensure min R:R
+   if(tpPips / slPips < InpMinRiskReward)
+      tpPips = slPips * InpMinRiskReward;
+   
+   double tpDistance = tpPips * pipValue;
+   if(isBuy) tp = price + tpDistance;
+   else      tp = price - tpDistance;
+   
+   sl = NormalizeDouble(sl, digits);
+   tp = NormalizeDouble(tp, digits);
+   
+   // Enforce broker stop level
+   long stopLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   double minDistance = stopLevel * point;
+   
+   if(minDistance > 0)
+   {
+      if(MathAbs(price - sl) < minDistance)
+      {
+         if(isBuy) sl = price - minDistance * BROKER_STOP_BUFFER;
+         else      sl = price + minDistance * BROKER_STOP_BUFFER;
+         sl = NormalizeDouble(sl, digits);
+         slPips = MathAbs(price - sl) / pipValue;
+      }
+      if(MathAbs(price - tp) < minDistance)
+      {
+         if(isBuy) tp = price + minDistance * BROKER_STOP_BUFFER;
+         else      tp = price - minDistance * BROKER_STOP_BUFFER;
+         tp = NormalizeDouble(tp, digits);
+      }
+   }
+   
+   double lot = CalculateLotSize(price, slPips);
+   
+   Print("====================================");
+   Print("ICT ", isBuy ? "BUY" : "SELL", " (OTE-only) - ", _Symbol);
+   Print("Signal: ", comment);
+   Print("Entry: ", DoubleToString(price, digits),
+         " | SL: ", DoubleToString(sl, digits), " (", DoubleToString(slPips, 1), " pips, ATR-based)",
+         " | TP: ", DoubleToString(tp, digits), " (", DoubleToString(tpPips, 1), " pips)");
+   Print("R:R = 1:", DoubleToString(tpPips / MathMax(slPips, 0.1), 2), " | Lot: ", DoubleToString(lot, 2));
+   Print("====================================");
+   
+   if(isBuy && (sl >= price || tp <= price))  { Print("ERROR: Invalid BUY SL/TP!"); return; }
+   if(!isBuy && (sl <= price || tp >= price)) { Print("ERROR: Invalid SELL SL/TP!"); return; }
+   
+   LogTradeEvent("ATTEMPT", comment, isBuy, price, sl, tp, lot, -1);
+   
+   bool result = isBuy ? trade.Buy(lot, _Symbol, 0, sl, tp, comment)
+                       : trade.Sell(lot, _Symbol, 0, sl, tp, comment);
+   
+   if(result)
+   {
+      Print("SUCCESS: ICT OTE-only Order | Ticket: ", trade.ResultOrder());
       LogTradeEvent("SUCCESS", comment, isBuy, price, sl, tp, lot, (int)trade.ResultRetcode());
       g_lastTradeTime = TimeCurrent();
    }

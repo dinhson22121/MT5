@@ -2,6 +2,93 @@
 
 ---
 
+## Version 4.3 - RSI CROSS-OVER + EURUSD FILTER (2026-04-01) 🎯
+
+### Core Problem: Trend mean reversion enters too early (20% WR, -$407)
+- **Old logic**: Enter while RSI is still in oversold zone (RSI < 30 and turning up)
+- This catches "falling knives" — RSI bounces briefly then continues down
+- 8 of 10 Trend trades lost because entry was premature
+
+### Fix 1: RSI Cross-Over Confirmation (`InpUseRSICrossOver = true`)
+- **New logic**: Wait for RSI to EXIT the oversold/overbought zone
+- BUY: `rsi[1] < 30` (was oversold) AND `rsi[0] > 33` (crossed back + buffer)
+- SELL: `rsi[1] > 70` (was overbought) AND `rsi[0] < 67` (crossed back - buffer)
+- Buffer (`InpRSICrossBuffer = 3`) prevents false crosses from RSI noise
+- Cross-over already confirms reversal direction → skip legacy `rsiConfirmed` check
+- Toggle: `InpUseRSICrossOver = false` reverts to legacy mode
+
+### Fix 2: EURUSD Exclusion (`InpEURUSDMomentumOnly = true`)
+- Data: EURUSD = -$355 of -$371 total loss (96% of all losses!)
+- EURUSD Trend trades: 5 losses, 2 tiny wins ($21, $19)
+- `InpExcludeEURUSD = true` → completely blocks EURUSD from all strategies
+- `InpEURUSDMomentumOnly = true` → EURUSD can only trade Momentum (blocked from Trend + Sideways)
+- Default: `InpExcludeEURUSD = false`, `InpEURUSDMomentumOnly = true`
+
+### New Input Parameters
+| Parameter | Default | Group | Purpose |
+|-----------|---------|-------|---------|
+| `InpUseRSICrossOver` | true | RSI Confirmation | Enable cross-over entry for Trend |
+| `InpRSICrossBuffer` | 3 | RSI Confirmation | Pips beyond threshold for confirmation |
+| `InpExcludeEURUSD` | false | Symbol Filter | Completely exclude EURUSD |
+| `InpEURUSDMomentumOnly` | true | Symbol Filter | EUR only trades Momentum |
+
+### Expected Impact
+- Fewer Trend entries but much higher quality (confirmed reversals only)
+- EURUSD losses eliminated from Trend (-$355 saved)
+- Without EUR + with cross-over, projected WR: 50%+ (vs current 36.8%)
+
+---
+
+## Version 4.2 - QUALITY-FOCUSED OPTIMIZATION (2026-04-01) 📊
+
+### 🎯 Root Cause Analysis: 19 trades Mar 18-31, Win Rate 36.8%, Net -$371
+
+**Two core problems identified from log analysis:**
+
+#### Problem 1: Trailing stop destroying R:R
+- Designed R:R = 1:2 (SL 50, TP 100) → need 34% WR to break even
+- Actual R:R = 1:0.77 (avg win $51 vs avg loss $66) → need 56% WR!
+- BTC trailing activated at 30 pips, trailed 20 → captured only 10-40 pips
+- Only 1 of 7 wins hit actual TP (XAU +$134). Rest cut short by trailing.
+
+#### Problem 2: Trend strategy (mean reversion) = 20% WR, -$407
+- 10 Trend trades: only 2 wins (+$21.75, +$48.39). 6 full SL losses.
+- ADX 53.1, 63.9 trends lost → pullback was actually trend reversal
+- ADX 26-31 trends lost → trend too weak, EMA lagging
+
+#### Problem 3: Momentum volume threshold too low
+- Momentum Vol > 200%: **3W / 1L** (75% WR, +$237)
+- Momentum Vol 150-182%: **0W / 4L** (0% WR, -$323)
+- Clear edge: only trade momentum when volume is truly extreme
+
+### Changes Made (QUALITY FOCUS - no filter loosening)
+
+| # | Fix | Before | After | Rationale |
+|---|-----|--------|-------|-----------|
+| 1 | Trailing Activate (Scalp) | 40 pips | **70 pips** | Let TP hit naturally |
+| 2 | Trail Distance (Scalp) | 20 pips | **40 pips** | Wider = fewer premature exits |
+| 3 | Trailing Activate (LT) | 80 pips | **150 pips** | Same principle |
+| 4 | Trail Distance (LT) | 50 pips | **70 pips** | Same principle |
+| 5 | ATR Trail Multiplier | 1.0x | **2.5x** | Adaptive, much wider |
+| 6 | Min trail distance | 20 pips | **40 pips** | No over-tight trailing |
+| 7 | Min trail activate | 30 pips | **60 pips** | No early activation |
+| 8 | **ADX Cap (Trend)** | none | **max 45** | Block mean reversion in extreme trends |
+| 9 | **Momentum Volume** | 1.5x | **2.0x** | Data: Vol>200% = 75% WR |
+| 10 | Sideways Boundary | Fixed 50 pips | **15% of range** | XAU 6000pip range adaptive |
+
+### NOT Changed (user correctly identified: more trades ≠ more wins)
+- ❌ Volume (Trend) stays 1.0x — blocked signals might be losers
+- ❌ Cooldown stays 3600s — prevents revenge trading
+- ❌ Sideways RSI stays 30/70 — less extreme = less conviction
+
+### Expected Result
+- Trailing: wins grow from avg $51 → closer to $80-100 (near TP)
+- Trend: skip 3-4 of the losing trades (ADX > 45 blocked)
+- Momentum: skip the 150-182% volume losers
+- Net: fewer trades but higher quality → better P&L
+
+---
+
 ## Version 4.0.2 - POSITION SIZING RE-FIX (2026-02-10) 🔴 CRITICAL
 
 ### 🎯 Priority: CRITICAL - Forex Lot Calculation Fixed

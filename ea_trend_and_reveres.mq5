@@ -1,25 +1,39 @@
 //+------------------------------------------------------------------+
 //|                                BTC_RSI_MeanReversion_Optimized.mq5 |
 //|                                  Copyright 2024, Optimized Version |
-//|                                  v4.1 - PHASE 2: Strategy Optimization   |
+//|                                  v4.2 - PHASE 3: Quality-Focused Optimization |
 //+------------------------------------------------------------------+
-//| v4.1 PHASE 2 (2026-02-17)                                       |
-//| 1. ATR-Based SL/TP: Adaptive to volatility (SL=1.5x, TP=2.5x)  |
-//|    - Replaces fixed pip SL/TP with dynamic ATR-based distances   |
-//|    - Gold high vol: wider SL/TP | Low vol: tighter SL/TP        |
-//| 2. H1 Multi-Timeframe Confirmation:                              |
-//|    - Requires H1 EMA20/50 trend alignment before M15 entry      |
-//|    - BUY only when H1 uptrend, SELL only when H1 downtrend      |
-//| 3. RSI Levels: 30/70 (all strategies, RSI period=7 hits extremes)|
-//| 4. Pattern Volume: 1.5x (was 2.0x - too strict)                 |
-//| 5. ATR-Based Trailing: Trail distance = 1.0x ATR (adaptive)     |
-//|    - No more fixed 20 pip trail getting stopped by normal moves  |
+//| v4.5 (2026-04-13) - Phase 3 Data-Driven Optimization            |
+//| 29 trades, 40.9% WR, -$22 (11 days). 5 improvements:           |
+//| 1. Daily cap 4 trades (Apr 6: 7 trades=-$203)                   |
+//| 2. Momentum relaxed (Vol 2.0→1.5, ATR 1.2→1.0)                 |
+//| 3. ATR-based SL (1.5x ATR, R:R 2.0, clamp 30-150)              |
+//| 4. Spread 6→10 pips (233 blocks in Phase 3)                     |
+//| 5. Sideways RSI 30/70→35/65 (0 sideways trades)                 |
+//+------------------------------------------------------------------+
+//| v4.4 (2026-04-02) - RSI Cross-Over Lookback Fix                 |
+//| Problem: 0 trades Apr 1 (504 evals). Cross-over required single-|
+//| bar RSI jump (rsi[1]<30→rsi[0]>33). RSI exits gradually over    |
+//| 2-3 bars, so condition never met. Fix: lookback window (3 bars).|
+//+------------------------------------------------------------------+
+//| v4.3 (2026-04-01) - RSI Cross-Over + EURUSD Filter              |
+//| Analysis: 19 trades, 36.8% WR, -$371 (Mar 18-31)                |
+//| Root cause 1: Trailing stop destroying R:R (avg win $51 vs $66)  |
+//| Root cause 2: Trend mean reversion = 20% WR, -$407               |
+//| Root cause 3: Momentum Vol <200% = 0% WR (all losses)            |
+//| 1. TRAILING FIX: Wider activation (70/150) & distance (40/70)    |
+//|    - ATR multiplier 1.0x→2.5x, min trail 40, min activate 60    |
+//| 2. ADX CAP: Max ADX=45 for trend mean reversion                  |
+//|    - ADX>45 = trend too strong, pullback is actually reversal    |
+//| 3. MOMENTUM VOL: 1.5x→2.0x (data: >200% = 75% WR)              |
+//| 4. SIDEWAYS BOUNDARY: fixed 50pips→15% of range (dynamic)        |
+//| NOT changed: Volume(trend), cooldown, sideways RSI - quality>qty |
 //+------------------------------------------------------------------+
 //| v4.0.2 Lot calculation fix: Uses broker's actual contract size   |
 //| v4.0 Phase 1: ADX 25, Volume 1.5x, ATR 0.8x, Pattern mandatory |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version   "4.10"  // PHASE 2: ATR SL/TP, H1 MTF confirmation, RSI tuning
+#property version   "4.50"  // v4.5: Phase 3 data-driven optimization (daily cap, ATR SL, relaxed filters)
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -43,10 +57,14 @@ input int InpRSIPeriod_LongTerm = 14;      // Long-Term: Stable RSI
 input int InpRSIOversold = 30;             // RSI oversold level
 input int InpRSIOverbought = 70;           // RSI overbought level
 input bool InpUseRSIConfirmation = true;   // Wait for RSI reversal
+input bool InpUseRSICrossOver = true;      // NEW: Wait for RSI to cross BACK above/below threshold (not just turning)
+input int InpRSICrossBuffer = 3;           // NEW: Buffer above oversold/below overbought for cross confirmation (e.g. 30+3=33)
+input int InpRSICrossLookback = 3;         // v4.4: Lookback bars for oversold/overbought detection (1=prev only, 3=check last 3 bars)
 input int InpEMAFast = 34;
 input int InpEMASlow = 89;
 input int InpADXPeriod = 14;
 input double InpMinADX = 25;                   // STRENGTHENED: Min ADX for strong trend (was 15)
+input double InpMaxADXForMeanReversion = 45;    // NEW: Max ADX for mean reversion (>45 = trend too strong, reversals fail)
 
 input group "=== Volume Filter ==="
 input int InpVolumePeriod = 20;
@@ -62,15 +80,15 @@ input double InpRiskBasedThreshold = 300.0;    // Balance >= this → use risk% 
 input int InpStopLossPips_Scalp = 50;         // Scalping: SL 50 pips
 input int InpTakeProfitPips_Scalp = 100;      // Scalping: TP 100 (R:R = 1:2)
 input int InpBreakevenPips_Scalp = 40;        // Scalping: Activate breakeven at +40
-input int InpTrailingActivatePips_Scalp = 40; // Scalping: Activate trailing at +40 pips
-input int InpTrailingDistancePips_Scalp = 20; // Scalping: Trail distance 20 pips
+input int InpTrailingActivatePips_Scalp = 70; // Scalping: Activate trailing at +70 pips (was 40 - too early)
+input int InpTrailingDistancePips_Scalp = 40; // Scalping: Trail distance 40 pips (was 20 - too tight)
 
 input group "=== Risk Management - LONG-TERM ==="
 input int InpStopLossPips_LongTerm = 80;      // Long-Term: Wider SL (80 pips)
 input int InpTakeProfitPips_LongTerm = 200;   // Long-Term: TP 200 (R:R = 1:2.5)
 input int InpBreakevenPips_LongTerm = 100;    // Long-Term: Activate breakeven at +100
-input int InpTrailingActivatePips_LongTerm = 80;  // Long-Term: Activate trailing at +80 pips
-input int InpTrailingDistancePips_LongTerm = 50;  // Long-Term: Trail distance 50 pips
+input int InpTrailingActivatePips_LongTerm = 150;  // Long-Term: Activate trailing at +150 pips (was 80)
+input int InpTrailingDistancePips_LongTerm = 70;  // Long-Term: Trail distance 70 pips (was 50)
 
 input bool InpUseTrailingStop = true;         // Enable Trailing Stop
 input bool InpUseAutoMaxPositions = false;
@@ -89,9 +107,10 @@ input int InpSidewayStopLossPips_LongTerm = 80;   // Long-Term: Match trend SL
 input int InpSidewayTakeProfitPips_LongTerm = 200; // Long-Term: Match trend TP
 input int InpSidewayRangePeriod = 50;          // Bars to calculate range on H4 timeframe
 input int InpSidewayMinRangePips = 200;        // Min range size to trade (skip small ranges)
-input int InpSidewayMaxDistanceToBoundary = 50; // Max distance from support/resistance (pips)
-input int InpSidewayRSIOversold = 30;      // Sideways RSI buy level
-input int InpSidewayRSIOverbought = 70;    // Sideways RSI sell level
+input int InpSidewayMaxDistanceToBoundary = 50; // Max distance from S/R (pips, fallback - see dynamic calc)
+input double InpSidewayBoundaryPercent = 15.0; // Max distance as % of range (15%=top/bottom 15%)
+input int InpSidewayRSIOversold = 35;      // v4.5: Relaxed 30→35 (RSI rarely hits 30 in sideways)
+input int InpSidewayRSIOverbought = 65;    // v4.5: Relaxed 70→65 (RSI rarely hits 70 in sideways)
 
 input group "=== Momentum Trading Settings ==="
 input bool InpAllowMomentumTrade = true;       // Momentum mode: FOMO breakout trading
@@ -101,8 +120,8 @@ input int InpMomentumStopLossPips_Scalp = 50;   // Scalping: SL 50 pips
 input int InpMomentumTakeProfitPips_Scalp = 100; // Scalping: TP 100 (R:R = 1:2)
 input int InpMomentumStopLossPips_LongTerm = 80; // Long-Term: Wider SL
 input int InpMomentumTakeProfitPips_LongTerm = 200; // Long-Term: TP
-input double InpMomentumVolumeMultiplier = 1.5; // HIGH volume required (was global 1.0)
-input double InpMomentumATRMultiplier = 1.2;    // HIGH ATR required (was global 0.5)
+input double InpMomentumVolumeMultiplier = 1.5; // v4.5: Lowered 2.0→1.5 (0 momentum trades in Phase 3)
+input double InpMomentumATRMultiplier = 1.0;    // v4.5: Lowered 1.2→1.0 (too strict, blocked all momentum)
 
 input group "=== Crypto/BTC Adaptation ==="
 input int InpCryptoRSIOversold = 30;            // Crypto RSI oversold
@@ -110,6 +129,7 @@ input int InpCryptoRSIOverbought = 70;          // Crypto RSI overbought
 
 input group "=== Trading Rules ==="
 input int InpCooldownSeconds = 3600;          // Cooldown between trades (seconds)
+input int InpMaxTradesPerDay = 4;              // v4.5: Max trades per day (0=unlimited, 4=prevent cluster loss)
 input bool InpAllowOnCurrentBar = false;      // Allow trading on currently forming bar (for testing)
 input bool InpUseTimeFilter = false;           // Enable session filter
 input bool InpTradeAsianSession = false;       // Asian: 1:00-9:00 UTC (Tokyo)
@@ -119,15 +139,26 @@ input bool InpTradeUSSession = true;           // US: 13:00-22:00 UTC (New York)
 input group "=== Additional Filters ==="
 input double InpMinATRMultiplier = 0.5;        // Min ATR vs avg (0.5=easy, 0.8=strict)
 input int InpATRPeriod = 14;
-input int InpMaxSpreadPips = 6;                // Max spread (Exness~2-3, XM~4-6)
+input int InpMaxSpreadPips = 10;               // v4.5: Raised 6→10 (233 blocks in Phase 3, GBP/JPY/CAD)
 input bool InpUseCandleConfirmation = true;    // Check candle direction
 input bool InpRequireCandlePattern = false;    // Require exact pattern (Engulfing/Pinbar) - false=just candle direction
 input double InpMinPinbarWickRatio = 2.0;      // Min wick/body ratio for Pinbar
 input double InpMinEngulfingRatio = 1.2;       // Min engulfing body ratio
 
+input group "=== Symbol Filter ==="
+input bool InpExcludeEURUSD = false;           // Fully exclude EURUSD from ALL strategies
+input bool InpEURUSDMomentumOnly = false;      // EURUSD: Only allow Momentum trades (v4.4: re-enabled with cross-over fix)
+
+input group "=== ATR-Based SL/TP ==="
+input bool InpUseATRBasedSL = true;            // v4.5: SL = ATR × multiplier (auto-adapts per symbol)
+input double InpATRSLMultiplier = 1.5;         // v4.5: SL distance = ATR × this (1.5 = safe for Gold/BTC)
+input double InpATRTPRatio = 2.0;              // v4.5: TP = SL × this (2.0 = 1:2 R:R)
+input int InpATRSLMinPips = 30;                // v4.5: Min SL in pips (floor, prevent too tight SL)
+input int InpATRSLMaxPips = 150;               // v4.5: Max SL in pips (cap, prevent too wide SL)
+
 input group "=== Trailing Stop (ATR-Based) ==="
 input bool InpUseATRTrailing = true;           // Use ATR for trailing distance (adaptive)
-input double InpTrailingATRMultiplier = 1.0;   // Trail distance = ATR × this
+input double InpTrailingATRMultiplier = 2.5;   // Trail distance = ATR × this (was 1.0 - too tight)
 
 input group "=== Multi-Timeframe Confirmation ==="
 input bool InpUseH1Confirmation = true;        // Require H1 trend alignment before M15 entry
@@ -141,6 +172,8 @@ input string InpLogFolder = "EA_Logs";               // Folder in MT5 Files (dai
 
 //--- Global Variables
 datetime g_lastTradeTime = 0;
+int g_dailyTradeCount = 0;    // v4.5: Daily trade counter (reset each new day)
+int g_lastTradeDay = 0;       // v4.5: Last trading day (for daily counter reset)
 int g_handleRSI;
 int g_handleEMAFast;
 int g_handleEMASlow;
@@ -148,6 +181,10 @@ int g_handleATR;
 int g_handleADX;
 int g_handleEMAFast_H1;  // H1 timeframe EMA for multi-TF confirmation
 int g_handleEMASlow_H1;  // H1 timeframe EMA for multi-TF confirmation
+
+//--- Position close tracking (detect SL/TP/stale/manual exits)
+ulong g_trackedTickets[];    // Currently open position tickets
+int   g_trackedCount = 0;
 
 //--- Small account lot mode check
 //    Equity < $300: Use broker minimum lot (no risk% calculation)
@@ -168,6 +205,43 @@ int GetSidewayStopLossPips()   { return InpEnableScalping ? InpSidewayStopLossPi
 int GetSidewayTakeProfitPips() { return InpEnableScalping ? InpSidewayTakeProfitPips_Scalp : InpSidewayTakeProfitPips_LongTerm; }
 int GetMomentumStopLossPips()  { return InpEnableScalping ? InpMomentumStopLossPips_Scalp : InpMomentumStopLossPips_LongTerm; }
 int GetMomentumTakeProfitPips(){ return InpEnableScalping ? InpMomentumTakeProfitPips_Scalp : InpMomentumTakeProfitPips_LongTerm; }
+
+//+------------------------------------------------------------------+
+// FILE LOGGING: Write every Print() message to daily text log file
+// File location: Terminal Common Files → EA_Logs/EA_FullLog_YYYY.MM.DD_SYMBOL.txt
+// Open MT5 → File → Open Data Folder → go up to Terminal → Common → Files → EA_Logs
+//+------------------------------------------------------------------+
+string _GetDailyTextLogFileName()
+{
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   string dateStr = IntegerToString(dt.year) + "."
+                  + StringFormat("%02d", dt.mon) + "."
+                  + StringFormat("%02d", dt.day);
+   return InpLogFolder + "/EA_FullLog_" + dateStr + "_" + _Symbol + ".txt";
+}
+
+void _WriteLogLine(string msg)
+{
+   if(!InpEnableFileLogging) return;
+   string fileName = _GetDailyTextLogFileName();
+   int fh = FileOpen(fileName, FILE_READ|FILE_WRITE|FILE_TXT|FILE_COMMON|FILE_SHARE_READ);
+   if(fh == INVALID_HANDLE)
+      fh = FileOpen(fileName, FILE_WRITE|FILE_TXT|FILE_COMMON|FILE_SHARE_READ);
+   if(fh == INVALID_HANDLE) return;
+   FileSeek(fh, 0, SEEK_END);
+   string ts = TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS);
+   FileWriteString(fh, ts + "\t" + msg + "\r\n");
+   FileClose(fh);
+}
+
+// PrintLog: Print to Experts tab AND write to log file
+// Use this instead of Print() when you need file logging
+void PrintLog(string msg)
+{
+   Print(msg);
+   _WriteLogLine(msg);
+}
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -233,7 +307,7 @@ int OnInit()
    double pipValue = GetPipValue();
    
    Print("=====================================");
-   Print("EA INITIALIZED - v4.1 PHASE 2");
+   Print("EA INITIALIZED - v4.3");
    Print("PROFILE: ", InpEnableScalping ? "SCALPING" : "LONG-TERM");
    double bal = AccountInfoDouble(ACCOUNT_EQUITY);
    if(IsSmallAccount())
@@ -249,23 +323,28 @@ int OnInit()
    }
    Print("   Safety limit: ", DoubleToString(InpMaxSafetyPercent,1), "% max risk per trade");
    Print("=====================================");
-   Print("🔧 v4.1 PHASE 2: Strategy Optimization");
-   Print("   SL/TP: FIXED (Scalp: 50/100, LongTerm: 80/200)");
-   Print("   H1 Confirmation: ", InpUseH1Confirmation ? "ENABLED" : "DISABLED",
-         " (EMA", InpH1EMAFast, "/", InpH1EMASlow, ")");
-   Print("   ATR Trailing: ", InpUseATRTrailing ? "ENABLED" : "DISABLED",
-         " (", InpTrailingATRMultiplier, "x ATR)");
-   Print("-------------------------------------");
-   Print("⚡ Phase 2: RSI 35/65 trend | 40/60 sideways | Pattern Vol 1.5x");
-   Print("   Sideways RSI: ", InpSidewayRSIOversold, "/", InpSidewayRSIOverbought);
+   Print("🔧 v4.5: Phase 3 Optimization (Apr 2026)");
+   Print("   SL/TP: ", InpUseATRBasedSL ? StringFormat("ATR-BASED (%.1fx ATR, R:R 1:%.1f, clamp %d-%d pips)", InpATRSLMultiplier, InpATRTPRatio, InpATRSLMinPips, InpATRSLMaxPips) : "FIXED (Scalp: 50/100, LongTerm: 80/200)");
+   Print("   Daily Trade Cap: ", InpMaxTradesPerDay > 0 ? IntegerToString(InpMaxTradesPerDay) + " trades/day" : "UNLIMITED");
+   Print("   Trailing: WIDER (activate ", GetTrailingActivatePips(), " / dist ", GetTrailingDistancePips(), " pips)");
+   Print("   ATR Trail: ", InpTrailingATRMultiplier, "x (was 1.0x - too tight)");
+   Print("   Trend ADX cap: ", InpMaxADXForMeanReversion, " (skip mean reversion in extreme trends)");
+   Print("   Momentum Vol: ", InpMomentumVolumeMultiplier, "x | ATR: ", InpMomentumATRMultiplier, "x (v4.5: lowered for more signals)");
+   Print("   Sideways RSI: ", InpSidewayRSIOversold, "/", InpSidewayRSIOverbought, " (v4.5: relaxed for more signals)");
+   Print("   Spread Max: ", InpMaxSpreadPips, " pips (v4.5: raised from 6)");
+   Print("   Sideways Boundary: ", InpSidewayBoundaryPercent, "% of range (dynamic)");
+   Print("   RSI Cross-Over: ", InpUseRSICrossOver ? "ENABLED" : "DISABLED", " (buffer=", InpRSICrossBuffer, ", lookback=", InpRSICrossLookback, " bars)");
+   Print("   EURUSD Filter: ", InpExcludeEURUSD ? "EXCLUDED" : (InpEURUSDMomentumOnly ? "MOMENTUM ONLY" : "ALL STRATEGIES"));
    Print("------------------------------------");
    Print("Symbol: ", _Symbol);
    Print("Pip Value: ", DoubleToString(pipValue, _Digits));
    Print("Position Size: ", InpPositionSizePercent, "%");
    Print("------------------------------------");
-   Print("TRENDING MODE:");
+   Print("TRENDING MODE (Mean Reversion):");
    Print("  SL: ", GetStopLossPips(), " pips | TP: ", GetTakeProfitPips(), " pips");
    Print("  R:R = 1:", DoubleToString((double)GetTakeProfitPips()/GetStopLossPips(), 2));
+   Print("  ADX Range: ", InpMinADX, " - ", InpMaxADXForMeanReversion, " (skip extreme trends)");
+   Print("  RSI Entry: ", InpUseRSICrossOver ? StringFormat("CROSS-OVER (lookback %d bars, exit >%d/%d)", InpRSICrossLookback, InpRSIOversold+InpRSICrossBuffer, InpRSIOverbought-InpRSICrossBuffer) : "LEGACY (RSI<30 + turning up)");
    Print("  BUY Trend: ", InpAllowTrendingBuy ? "YES" : "NO");
    Print("  SELL Trend: ", InpAllowTrendingSell ? "YES" : "NO");
    Print("------------------------------------");
@@ -285,7 +364,7 @@ int OnInit()
       Print("  SL: ", GetSidewayStopLossPips(), " pips | TP: ", GetSidewayTakeProfitPips(), " pips");
       Print("  R:R = 1:", DoubleToString((double)GetSidewayTakeProfitPips()/GetSidewayStopLossPips(), 2));
       Print("  Range Filter: Min ", InpSidewayMinRangePips, " pips over ", InpSidewayRangePeriod, " H4 bars");
-      Print("  Boundary Filter: Max ", InpSidewayMaxDistanceToBoundary, " pips from S/R");
+      Print("  Boundary Filter: ", InpSidewayBoundaryPercent, "% of range (min ", InpSidewayMaxDistanceToBoundary, " pips from S/R)");
    }
    Print("------------------------------------");
    Print("MOMENTUM MODE: ", InpAllowMomentumTrade ? "ENABLED" : "DISABLED (FIXING LOGIC)");
@@ -397,7 +476,46 @@ int OnInit()
       Print("  Example: Entry 0.9350, SL 50 pips = 0.9300, TP 100 pips = 0.9450");
    }
    
+   if(StringFind(_Symbol, "GBPUSD") >= 0)
+   {
+      Print("------------------------------------");
+      Print("GBPUSD: 1 pip = 0.0001 (5-digit broker, spread ~0.3 pip Exness)");
+      Print("  Trend SL/TP: ", GetStopLossPips(), " / ", GetTakeProfitPips(), " pips");
+      Print("  Momentum SL/TP: ", GetMomentumStopLossPips(), " / ", GetMomentumTakeProfitPips(), " pips");
+      Print("  Sideway SL/TP: ", GetSidewayStopLossPips(), " / ", GetSidewayTakeProfitPips(), " pips");
+      Print("  Example: Entry 1.2950, SL 40 pips = 1.2910, TP 100 pips = 1.3050");
+   }
+   
+   if(StringFind(_Symbol, "AUDUSD") >= 0)
+   {
+      Print("------------------------------------");
+      Print("AUDUSD: 1 pip = 0.0001 (5-digit broker, spread ~0.6 pip Exness)");
+      Print("  Trend SL/TP: ", GetStopLossPips(), " / ", GetTakeProfitPips(), " pips");
+      Print("  Momentum SL/TP: ", GetMomentumStopLossPips(), " / ", GetMomentumTakeProfitPips(), " pips");
+      Print("  Sideway SL/TP: ", GetSidewayStopLossPips(), " / ", GetSidewayTakeProfitPips(), " pips");
+      Print("  Example: Entry 0.6550, SL 40 pips = 0.6510, TP 100 pips = 0.6650");
+   }
+   
+   if(StringFind(_Symbol, "USDCAD") >= 0)
+   {
+      Print("------------------------------------");
+      Print("USDCAD: 1 pip = 0.0001 (5-digit broker, spread ~0.8 pip Exness)");
+      Print("  Trend SL/TP: ", GetStopLossPips(), " / ", GetTakeProfitPips(), " pips");
+      Print("  Momentum SL/TP: ", GetMomentumStopLossPips(), " / ", GetMomentumTakeProfitPips(), " pips");
+      Print("  Sideway SL/TP: ", GetSidewayStopLossPips(), " / ", GetSidewayTakeProfitPips(), " pips");
+      Print("  Example: Entry 1.3600, SL 40 pips = 1.3640 (inverted), TP 100 pips = 1.3500");
+   }
+   
    Print("====================================");
+   
+   // Show log file location
+   if(InpEnableFileLogging)
+   {
+      string logPath = TerminalInfoString(TERMINAL_COMMONDATA_PATH) + "\\Files\\" + InpLogFolder;
+      Print("📁 FULL LOG FILE: ", logPath);
+      Print("   File: EA_FullLog_", TimeToString(TimeCurrent(), TIME_DATE), "_", _Symbol, ".txt");
+      Print("   All Print() messages are written to this file");
+   }
    
    return(INIT_SUCCEEDED);
 }
@@ -806,6 +924,33 @@ void CalculateSLTP_FixedPips(double entryPrice, bool isBuy, int slPips, int tpPi
 }
 
 //+------------------------------------------------------------------+
+// v4.5: Get ATR-adjusted SL/TP pips (auto-adapts per symbol volatility)
+// Returns SL pips; TP pips = SL * InpATRTPRatio
+// Falls back to fixed pips if ATR unavailable or ATR SL disabled
+//+------------------------------------------------------------------+
+int GetATRBasedSLPips(double currentATR)
+{
+   if(!InpUseATRBasedSL || currentATR <= 0)
+      return 0;  // Caller should use fixed pips
+   
+   double pipValue = GetPipValue();
+   if(pipValue <= 0) return 0;
+   
+   int atrSLPips = (int)MathRound((currentATR * InpATRSLMultiplier) / pipValue);
+   
+   // Clamp to min/max
+   if(atrSLPips < InpATRSLMinPips) atrSLPips = InpATRSLMinPips;
+   if(atrSLPips > InpATRSLMaxPips) atrSLPips = InpATRSLMaxPips;
+   
+   return atrSLPips;
+}
+
+int GetATRBasedTPPips(int atrSLPips)
+{
+   return (int)MathRound(atrSLPips * InpATRTPRatio);
+}
+
+//+------------------------------------------------------------------+
 void OnTick()
 {
    static datetime lastBarTime = 0;
@@ -813,6 +958,7 @@ void OnTick()
    
    if(currentBarTime == lastBarTime)
    {
+      TrackOpenPositions();
       ManageOpenPositions();
       return;
    }
@@ -834,6 +980,7 @@ void OnTick()
    if(!CheckTradingConditions())
       return;
    
+   TrackOpenPositions();
    AnalyzeAndTrade(rsi, emaFast[0], emaSlow[0], atr[0], adxMain[0], diPlus[0], diMinus[0], (double)volume[0]);
 }
 
@@ -959,6 +1106,28 @@ bool CheckTradingConditions()
       return false;
    }
    
+   // v4.5: Daily trade cap - prevent cluster losses (Apr 6: 7 trades = -$203)
+   if(InpMaxTradesPerDay > 0)
+   {
+      MqlDateTime dtNow;
+      TimeToStruct(TimeCurrent(), dtNow);
+      int today = dtNow.day_of_year;
+      
+      // Reset counter on new day
+      if(today != g_lastTradeDay)
+      {
+         g_dailyTradeCount = 0;
+         g_lastTradeDay = today;
+      }
+      
+      if(g_dailyTradeCount >= InpMaxTradesPerDay)
+      {
+         if(InpEnableDetailedLogs)
+            Print("BLOCKED: Daily trade cap reached (", g_dailyTradeCount, "/", InpMaxTradesPerDay, ")");
+         return false;
+      }
+   }
+   
    if(!CheckSpread())
       return false;
    
@@ -999,6 +1168,120 @@ int CountOpenPositions()
       }
    }
    return count;
+}
+
+//+------------------------------------------------------------------+
+// Position close tracking: detect when positions disappear and log exit reason
+//+------------------------------------------------------------------+
+void TrackOpenPositions()
+{
+   // Build current list of open tickets for this EA
+   int total = PositionsTotal();
+   int count = 0;
+   ulong currentTickets[];
+   ArrayResize(currentTickets, total);
+   
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+      currentTickets[count++] = ticket;
+   }
+   ArrayResize(currentTickets, count);
+   
+   // Check which tracked tickets are no longer open
+   for(int i = 0; i < g_trackedCount; i++)
+   {
+      bool stillOpen = false;
+      for(int j = 0; j < count; j++)
+      {
+         if(g_trackedTickets[i] == currentTickets[j])
+         { stillOpen = true; break; }
+      }
+      if(!stillOpen)
+         LogClosedPosition(g_trackedTickets[i]);
+   }
+   
+   // Update tracked list
+   g_trackedCount = count;
+   ArrayResize(g_trackedTickets, count);
+   for(int i = 0; i < count; i++)
+      g_trackedTickets[i] = currentTickets[i];
+}
+
+void LogClosedPosition(ulong posTicket)
+{
+   // Search deal history for this position
+   datetime from = TimeCurrent() - 86400;  // last 24h
+   datetime to = TimeCurrent() + 3600;
+   HistorySelect(from, to);
+   
+   int totalDeals = HistoryDealsTotal();
+   for(int i = totalDeals - 1; i >= 0; i--)
+   {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket <= 0) continue;
+      
+      // Match by position ID
+      ulong dealPosId = HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
+      if(dealPosId != posTicket) continue;
+      
+      // Only interested in the closing deal (DEAL_ENTRY_OUT)
+      ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_INOUT) continue;
+      
+      double dealPrice = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
+      double dealProfit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
+      double dealSwap = HistoryDealGetDouble(dealTicket, DEAL_SWAP);
+      double dealComm = HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+      double dealVol = HistoryDealGetDouble(dealTicket, DEAL_VOLUME);
+      string dealComment = HistoryDealGetString(dealTicket, DEAL_COMMENT);
+      ENUM_DEAL_REASON reason = (ENUM_DEAL_REASON)HistoryDealGetInteger(dealTicket, DEAL_REASON);
+      ENUM_DEAL_TYPE dealType = (ENUM_DEAL_TYPE)HistoryDealGetInteger(dealTicket, DEAL_TYPE);
+      
+      // Determine exit reason
+      string exitReason = "UNKNOWN";
+      if(reason == DEAL_REASON_SL)        exitReason = "STOP_LOSS";
+      else if(reason == DEAL_REASON_TP)   exitReason = "TAKE_PROFIT";
+      else if(reason == DEAL_REASON_SO)   exitReason = "STOP_OUT";
+      else if(reason == DEAL_REASON_EXPERT) exitReason = "EA_CLOSE";  // stale exit, manual close by EA
+      else if(reason == DEAL_REASON_CLIENT) exitReason = "MANUAL";
+      else exitReason = "OTHER(" + IntegerToString((int)reason) + ")";
+      
+      string direction = (dealType == DEAL_TYPE_BUY) ? "CLOSE_SELL" : "CLOSE_BUY";
+      double netPL = dealProfit + dealSwap + dealComm;
+      double pipValue = GetPipValue();
+      
+      Print("╔══════════════════════════════════╗");
+      Print("║ POSITION CLOSED - ", exitReason);
+      Print("╠══════════════════════════════════╣");
+      Print("  Ticket: #", posTicket, " | ", direction);
+      Print("  Close Price: ", DoubleToString(dealPrice, _Digits));
+      Print("  Volume: ", DoubleToString(dealVol, 2));
+      Print("  Profit: $", DoubleToString(dealProfit, 2),
+            " | Swap: $", DoubleToString(dealSwap, 2),
+            " | Comm: $", DoubleToString(dealComm, 2));
+      Print("  NET P/L: $", DoubleToString(netPL, 2));
+      Print("  Comment: ", dealComment);
+      Print("╚══════════════════════════════════╝");
+      _WriteLogLine("CLOSED | " + exitReason + " | Ticket #" + IntegerToString((long)posTicket)
+                    + " | " + direction
+                    + " | Price: " + DoubleToString(dealPrice, _Digits)
+                    + " | Vol: " + DoubleToString(dealVol, 2)
+                    + " | P/L: $" + DoubleToString(netPL, 2)
+                    + " | " + dealComment);
+      
+      // Also log to CSV
+      LogTradeEvent(exitReason, dealComment, 
+                    (dealType == DEAL_TYPE_SELL),  // original position was BUY if closing deal is SELL
+                    dealPrice, 0, 0, dealVol, (int)reason, posTicket);
+      return;
+   }
+   
+   // If no matching deal found (shouldn't happen normally)
+   Print("⚠️ POSITION #", posTicket, " closed but deal not found in history");
 }
 
 //+------------------------------------------------------------------+
@@ -1289,8 +1572,8 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    }
    
    Comment(
-      "=== ", _Symbol, " - v4.2 FIXED SL/TP ===", "\n",
-      "🎯 TARGET: 70% WR | FIXED SL/TP | H1 MTF", "\n",
+      "=== ", _Symbol, " - v4.3 ===", "\n",
+      "🎯 LOG-DRIVEN OPT | Wider Trail | Lower Vol | Dynamic Boundary", "\n",
       "Balance: $", DoubleToString(balance, 2), " | Risk: ", InpPositionSizePercent, "%", "\n",
       "Session: ", sessionInfo, " | UTC: ", TimeToString(TimeGMT(), TIME_MINUTES), "\n",
       "Market: ", marketStateStr, " | H1: ", h1Info, " | ADX: ", DoubleToString(adx, 1), "\n",
@@ -1319,10 +1602,70 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
    // TRENDING SIGNALS (Mean Reversion - Wait for Reversal)
    if(marketState == MARKET_UPTREND && InpAllowTrendingBuy)
    {
+      // EURUSD filter: skip Trend strategy for EUR (data: -$355 of -$371 total loss from EUR Trend)
+      bool isEURUSD = (StringFind(_Symbol, "EUR") >= 0 && StringFind(_Symbol, "USD") >= 0);
+      if(isEURUSD && (InpExcludeEURUSD || InpEURUSDMomentumOnly))
+      {
+         if(InpEnableDetailedLogs)
+            Print("BLOCKED: TREND BUY - EURUSD excluded from Trend strategy");
+         // Don't return - let it fall through to Momentum/Sideways
+      }
+      else
+      {
       if(InpEnableDetailedLogs)
-         Print("🔍 Evaluating: TREND BUY | UPTREND + RSI=", DoubleToString(rsi[0], 1), " (need <", effectiveRSIOversold, ")");
+         Print("🔍 Evaluating: TREND BUY | UPTREND + RSI=", DoubleToString(rsi[0], 1), 
+               " prev=", DoubleToString(rsi[1], 1), " | ADX=", DoubleToString(adx, 1));
       
-      if(rsi[0] < effectiveRSIOversold)
+      // ADX cap: Don't do mean reversion when trend is too strong (ADX > 45)
+      if(InpMaxADXForMeanReversion > 0 && adx > InpMaxADXForMeanReversion)
+      {
+         if(InpEnableDetailedLogs)
+            Print("BLOCKED: TREND BUY - ADX too high for mean reversion (", DoubleToString(adx, 1), " > ", InpMaxADXForMeanReversion, ")");
+         LogSignalEvent("REJECT", "Trend_Buy", "ADXTooHigh", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+      }
+      else
+      {
+      // === RSI CROSS-OVER MODE (v4.4): Wait for RSI to EXIT oversold zone ===
+      // v4.2: Only checked rsi[1] → missed when RSI exits gradually over 2-3 bars
+      // v4.4: Check rsi[1..N] lookback window for oversold, then confirm rsi[0] crossed back
+      bool rsiEntryCondition = false;
+      if(InpUseRSICrossOver)
+      {
+         int crossTarget = effectiveRSIOversold + InpRSICrossBuffer;  // e.g. 30 + 3 = 33
+         
+         // Check if ANY bar in lookback window was oversold
+         bool wasOversold = false;
+         int oversoldBar = -1;
+         for(int lb = 1; lb <= InpRSICrossLookback; lb++)
+         {
+            if(rsi[lb] < effectiveRSIOversold)
+            {
+               wasOversold = true;
+               oversoldBar = lb;
+               break;  // Found most recent oversold bar
+            }
+         }
+         
+         rsiEntryCondition = (wasOversold && rsi[0] > crossTarget);
+         
+         if(InpEnableDetailedLogs)
+         {
+            if(wasOversold)
+               Print("  RSI Cross-Over: rsi[", oversoldBar, "]=", DoubleToString(rsi[oversoldBar], 1), 
+                     " was oversold | current=", DoubleToString(rsi[0], 1), 
+                     " need >", crossTarget, " → ", (rsiEntryCondition ? "CONFIRMED" : "NOT YET"));
+            else
+               Print("  RSI Cross-Over: no oversold in last ", InpRSICrossLookback, 
+                     " bars (closest=", DoubleToString(rsi[1], 1), ") → skip");
+         }
+      }
+      else
+      {
+         // Legacy mode: enter while RSI is still oversold but turning up
+         rsiEntryCondition = (rsi[0] < effectiveRSIOversold);
+      }
+      
+      if(rsiEntryCondition)
       {
          // Volume check for Trend strategy (1.0x)
          if(!volumeOK_Trend)
@@ -1330,17 +1673,18 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             if(InpEnableDetailedLogs)
                Print("BLOCKED: TREND BUY vol too low (", (int)currentVolume, " vs ", (int)(avgVolume * InpVolumeMultiplier), ")");
             LogSignalEvent("REJECT", "Trend_Buy", "VolumeLow", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-            return;
          }
+         else
+         {
          // H1 Multi-Timeframe Confirmation
          if(!CheckH1TrendAlignment(true))
          {
             LogSignalEvent("REJECT", "Trend_Buy", "H1NotAligned", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-            return;
          }
-         
-         // RSI Confirmation: MUST be turning up (reversal started)
-         bool rsiConfirmed = !InpUseRSIConfirmation || (rsi[0] > rsi[1]);
+         else
+         {
+         // RSI Confirmation (legacy mode only - cross-over already confirms direction)
+         bool rsiConfirmed = InpUseRSICrossOver || !InpUseRSIConfirmation || (rsi[0] > rsi[1]);
          
          if(!rsiConfirmed)
          {
@@ -1348,40 +1692,105 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
                Print("WAITING: TREND BUY - RSI not reversing yet (RSI=", DoubleToString(rsi[0], 1), 
                      " prev=", DoubleToString(rsi[1], 1), ")");
             LogSignalEvent("WAIT", "Trend_Buy", "RSI not reversing", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+         }
+         else
+         {
+         // Pattern Confirmation REQUIRED: Bullish Engulfing
+         bool patternOK_buy = CheckCandlePattern(true, currentVolume, avgVolume);
+         bool bypassPattern_buy = (!patternOK_buy && InpAllowOnCurrentBar);
+         
+         if(!patternOK_buy && !bypassPattern_buy)
+         {
+            if(InpEnableDetailedLogs)
+               Print("WAITING: TREND BUY - No bullish engulfing pattern yet");
+            LogSignalEvent("REJECT", "Trend_Buy", "PatternMissing", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+         }
+         else
+         {
+            if(bypassPattern_buy && InpEnableDetailedLogs)
+               Print("FORCED: TREND BUY - Pattern bypass due to InpAllowOnCurrentBar");
+            if(InpEnableDetailedLogs)
+               Print("✅ SIGNAL: TREND BUY (Uptrend + RSI ", (InpUseRSICrossOver ? "CrossOver" : "Reversal"), " + Pattern + H1)");
+            _WriteLogLine("SIGNAL: TREND BUY | RSI=" + DoubleToString(rsi[0], 1)
+                          + " | prev=" + DoubleToString(rsi[1], 1)
+                          + " | ADX=" + DoubleToString(adx, 1)
+                          + " | Vol=" + DoubleToString(currentVolume, 0) + "/" + DoubleToString(avgVolume, 0));
+            LogSignalEvent("SIGNAL", "Trend_Buy", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+            OpenPosition(true, GetStopLossPips(), GetTakeProfitPips(), "Trend_Buy", atr);
             return;
          }
-         
-         // Pattern Confirmation REQUIRED: Bullish Engulfing
-         if(!CheckCandlePattern(true, currentVolume, avgVolume))
-         {
-            if(!InpAllowOnCurrentBar)
-            {
-               if(InpEnableDetailedLogs)
-                  Print("WAITING: TREND BUY - No bullish engulfing pattern yet");
-               LogSignalEvent("REJECT", "Trend_Buy", "PatternMissing", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-               return;
-            }
-            else
-            {
-               if(InpEnableDetailedLogs)
-                  Print("FORCED: TREND BUY - Pattern bypass due to InpAllowOnCurrentBar");
-            }
-         }
-         
-         if(InpEnableDetailedLogs)
-            Print("✅ SIGNAL: TREND BUY (Uptrend + RSI Reversal + Pattern + H1 Aligned)");
-         LogSignalEvent("SIGNAL", "Trend_Buy", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-         OpenPosition(true, GetStopLossPips(), GetTakeProfitPips(), "Trend_Buy", atr);
-         return;
-      }
+         } // rsiConfirmed
+         } // H1 aligned
+         } // volume OK
+      } // rsiEntryCondition
+      } // ADX cap
+      } // EURUSD filter
    }
    
    if(marketState == MARKET_DOWNTREND && InpAllowTrendingSell)
    {
+      // EURUSD filter: skip Trend strategy for EUR
+      bool isEURUSD_sell = (StringFind(_Symbol, "EUR") >= 0 && StringFind(_Symbol, "USD") >= 0);
+      if(isEURUSD_sell && (InpExcludeEURUSD || InpEURUSDMomentumOnly))
+      {
+         if(InpEnableDetailedLogs)
+            Print("BLOCKED: TREND SELL - EURUSD excluded from Trend strategy");
+         // Don't return - let it fall through to Momentum/Sideways
+      }
+      else
+      {
       if(InpEnableDetailedLogs)
-         Print("🔍 Evaluating: TREND SELL | DOWNTREND + RSI=", DoubleToString(rsi[0], 1), " (need >", effectiveRSIOverbought, ")");
+         Print("🔍 Evaluating: TREND SELL | DOWNTREND + RSI=", DoubleToString(rsi[0], 1), 
+               " prev=", DoubleToString(rsi[1], 1), " | ADX=", DoubleToString(adx, 1));
       
-      if(rsi[0] > effectiveRSIOverbought)
+      // ADX cap: Don't do mean reversion when trend is too strong
+      if(InpMaxADXForMeanReversion > 0 && adx > InpMaxADXForMeanReversion)
+      {
+         if(InpEnableDetailedLogs)
+            Print("BLOCKED: TREND SELL - ADX too high for mean reversion (", DoubleToString(adx, 1), " > ", InpMaxADXForMeanReversion, ")");
+         LogSignalEvent("REJECT", "Trend_Sell", "ADXTooHigh", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+      }
+      else
+      {
+      // === RSI CROSS-OVER MODE (v4.4): Wait for RSI to EXIT overbought zone ===
+      bool rsiEntryCondition_sell = false;
+      if(InpUseRSICrossOver)
+      {
+         int crossTarget_sell = effectiveRSIOverbought - InpRSICrossBuffer;  // e.g. 70 - 3 = 67
+         
+         // Check if ANY bar in lookback window was overbought
+         bool wasOverbought = false;
+         int overboughtBar = -1;
+         for(int lb = 1; lb <= InpRSICrossLookback; lb++)
+         {
+            if(rsi[lb] > effectiveRSIOverbought)
+            {
+               wasOverbought = true;
+               overboughtBar = lb;
+               break;  // Found most recent overbought bar
+            }
+         }
+         
+         rsiEntryCondition_sell = (wasOverbought && rsi[0] < crossTarget_sell);
+         
+         if(InpEnableDetailedLogs)
+         {
+            if(wasOverbought)
+               Print("  RSI Cross-Over: rsi[", overboughtBar, "]=", DoubleToString(rsi[overboughtBar], 1), 
+                     " was overbought | current=", DoubleToString(rsi[0], 1), 
+                     " need <", crossTarget_sell, " → ", (rsiEntryCondition_sell ? "CONFIRMED" : "NOT YET"));
+            else
+               Print("  RSI Cross-Over: no overbought in last ", InpRSICrossLookback, 
+                     " bars (closest=", DoubleToString(rsi[1], 1), ") → skip");
+         }
+      }
+      else
+      {
+         // Legacy mode: enter while RSI is still overbought but turning down
+         rsiEntryCondition_sell = (rsi[0] > effectiveRSIOverbought);
+      }
+      
+      if(rsiEntryCondition_sell)
       {
          // Volume check for Trend strategy (1.0x)
          if(!volumeOK_Trend)
@@ -1389,55 +1798,73 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             if(InpEnableDetailedLogs)
                Print("BLOCKED: TREND SELL vol too low (", (int)currentVolume, " vs ", (int)(avgVolume * InpVolumeMultiplier), ")");
             LogSignalEvent("REJECT", "Trend_Sell", "VolumeLow", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-            return;
          }
+         else
+         {
          // H1 Multi-Timeframe Confirmation
          if(!CheckH1TrendAlignment(false))
          {
             LogSignalEvent("REJECT", "Trend_Sell", "H1NotAligned", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-            return;
          }
+         else
+         {
+         // RSI Confirmation (legacy mode only - cross-over already confirms direction)
+         bool rsiConfirmed_sell = InpUseRSICrossOver || !InpUseRSIConfirmation || (rsi[0] < rsi[1]);
          
-         // RSI Confirmation: MUST be turning down (reversal started)
-         bool rsiConfirmed = !InpUseRSIConfirmation || (rsi[0] < rsi[1]);
-         
-         if(!rsiConfirmed)
+         if(!rsiConfirmed_sell)
          {
             if(InpEnableDetailedLogs)
                Print("WAITING: TREND SELL - RSI not reversing yet (RSI=", DoubleToString(rsi[0], 1), 
                      " prev=", DoubleToString(rsi[1], 1), ")");
             LogSignalEvent("WAIT", "Trend_Sell", "RSI not reversing", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+         }
+         else
+         {
+         // Pattern Confirmation REQUIRED: Bearish Engulfing
+         bool patternOK_sell = CheckCandlePattern(false, currentVolume, avgVolume);
+         bool bypassPattern_sell = (!patternOK_sell && InpAllowOnCurrentBar);
+         
+         if(!patternOK_sell && !bypassPattern_sell)
+         {
+            if(InpEnableDetailedLogs)
+               Print("WAITING: TREND SELL - No bearish engulfing pattern yet");
+            LogSignalEvent("REJECT", "Trend_Sell", "PatternMissing", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+         }
+         else
+         {
+            if(bypassPattern_sell && InpEnableDetailedLogs)
+               Print("FORCED: TREND SELL - Pattern bypass due to InpAllowOnCurrentBar");
+            if(InpEnableDetailedLogs)
+               Print("✅ SIGNAL: TREND SELL (Downtrend + RSI ", (InpUseRSICrossOver ? "CrossOver" : "Reversal"), " + Pattern + H1)");
+            _WriteLogLine("SIGNAL: TREND SELL | RSI=" + DoubleToString(rsi[0], 1)
+                          + " | prev=" + DoubleToString(rsi[1], 1)
+                          + " | ADX=" + DoubleToString(adx, 1)
+                          + " | Vol=" + DoubleToString(currentVolume, 0) + "/" + DoubleToString(avgVolume, 0));
+            LogSignalEvent("SIGNAL", "Trend_Sell", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+            OpenPosition(false, GetStopLossPips(), GetTakeProfitPips(), "Trend_Sell", atr);
             return;
          }
-         
-         // Pattern Confirmation REQUIRED: Bearish Engulfing
-         if(!CheckCandlePattern(false, currentVolume, avgVolume))
-         {
-            if(!InpAllowOnCurrentBar)
-            {
-               if(InpEnableDetailedLogs)
-                  Print("WAITING: TREND SELL - No bearish engulfing pattern yet");
-               LogSignalEvent("REJECT", "Trend_Sell", "PatternMissing", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-               return;
-            }
-            else
-            {
-               if(InpEnableDetailedLogs)
-                  Print("FORCED: TREND SELL - Pattern bypass due to InpAllowOnCurrentBar");
-            }
-         }
-         
-         if(InpEnableDetailedLogs)
-            Print("✅ SIGNAL: TREND SELL (Downtrend + RSI Reversal + Pattern + H1 Aligned)");
-         LogSignalEvent("SIGNAL", "Trend_Sell", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
-         OpenPosition(false, GetStopLossPips(), GetTakeProfitPips(), "Trend_Sell", atr);
-         return;
-      }
+         } // rsiConfirmed_sell
+         } // H1 aligned
+         } // volume OK
+      } // rsiEntryCondition_sell
+      } // ADX cap
+      } // EURUSD filter
    }
    
    // MOMENTUM SIGNALS (DI direction + Candle body size confirmation)
    if(InpAllowMomentumTrade && hasMomentum)
    {
+      // EURUSD filter: block Momentum only if fully excluded (InpExcludeEURUSD)
+      // InpEURUSDMomentumOnly=true means Momentum is ALLOWED for EURUSD
+      bool isEURUSD_mom = (StringFind(_Symbol, "EUR") >= 0 && StringFind(_Symbol, "USD") >= 0);
+      if(isEURUSD_mom && InpExcludeEURUSD)
+      {
+         if(InpEnableDetailedLogs)
+            Print("BLOCKED: MOMENTUM - EURUSD fully excluded (InpExcludeEURUSD=true)");
+      }
+      else
+      {
       // hasMomentum already guarantees: correct market state + RSI extreme + high volume + high ATR + DI direction
       // Signal phase only adds: H1 (optional), candle body size check
       
@@ -1510,6 +1937,10 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             Print("  Candle Body: ", DoubleToString(bodySize/GetPipValue(), 1), " pips (", DoubleToString(bodySize/atr*100, 0), "% ATR) ✅");
          }
          LogSignalEvent("SIGNAL", "Momentum_Buy", "MomentumConfirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+         _WriteLogLine("SIGNAL: MOMENTUM BUY | RSI=" + DoubleToString(rsi[0], 1)
+                       + " | Vol=" + DoubleToString(currentVolume/avgVolume, 2) + "x"
+                       + " | ATR=" + DoubleToString(atr/avgATR, 2) + "x"
+                       + " | DI+=" + DoubleToString(diPlus, 1) + " DI-=" + DoubleToString(diMinus, 1));
          OpenPosition(true, GetMomentumStopLossPips(), GetMomentumTakeProfitPips(), "Momentum_Buy", atr);
          return;
       }
@@ -1583,14 +2014,28 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             Print("  Candle Body: ", DoubleToString(bodySize/GetPipValue(), 1), " pips (", DoubleToString(bodySize/atr*100, 0), "% ATR) ✅");
          }
          LogSignalEvent("SIGNAL", "Momentum_Sell", "MomentumConfirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+         _WriteLogLine("SIGNAL: MOMENTUM SELL | RSI=" + DoubleToString(rsi[0], 1)
+                       + " | Vol=" + DoubleToString(currentVolume/avgVolume, 2) + "x"
+                       + " | ATR=" + DoubleToString(atr/avgATR, 2) + "x"
+                       + " | DI+=" + DoubleToString(diPlus, 1) + " DI-=" + DoubleToString(diMinus, 1));
          OpenPosition(false, GetMomentumStopLossPips(), GetMomentumTakeProfitPips(), "Momentum_Sell", atr);
          return;
       }
+   } // EURUSD Momentum filter
    }
    
    // SIDEWAYS SIGNALS (Range Trading with Boundary Confirmation)
    if(marketState == MARKET_SIDEWAYS && InpAllowSidewayTrade)
    {
+      // EURUSD filter: block Sideways if EUR restricted to Momentum only
+      bool isEURUSD_sw = (StringFind(_Symbol, "EUR") >= 0 && StringFind(_Symbol, "USD") >= 0);
+      if(isEURUSD_sw && (InpExcludeEURUSD || InpEURUSDMomentumOnly))
+      {
+         if(InpEnableDetailedLogs)
+            Print("BLOCKED: SIDEWAYS - EURUSD excluded from Sideways strategy");
+      }
+      else
+      {
       if(InpEnableDetailedLogs)
          Print("🔍 Evaluating: SIDEWAYS RANGE | ADX=", DoubleToString(adx, 1), " RSI=", DoubleToString(rsi[0], 1));
       
@@ -1630,6 +2075,15 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
       double distanceFromLow = (currentPrice - rangeLow) / GetPipValue();
       double distanceFromHigh = (rangeHigh - currentPrice) / GetPipValue();
       
+      // Dynamic boundary distance: use percentage of range OR fixed pips, whichever is larger
+      double dynamicBoundaryPips = rangeSize * (InpSidewayBoundaryPercent / 100.0);
+      double effectiveBoundary = MathMax(dynamicBoundaryPips, (double)InpSidewayMaxDistanceToBoundary);
+      
+      if(InpEnableDetailedLogs)
+         Print("  Boundary Filter: dynamic=", DoubleToString(dynamicBoundaryPips, 1), 
+               " pips (", InpSidewayBoundaryPercent, "% of range) | fixed=", InpSidewayMaxDistanceToBoundary,
+               " | effective=", DoubleToString(effectiveBoundary, 1), " pips");
+      
       // BUY when RSI hits lower bound (oversold in range)
       if(rsi[0] < lowerBound)
       {
@@ -1641,12 +2095,12 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             return;
          }
          
-         // Filter 1: Must be near range bottom (support)
-         if(distanceFromLow > InpSidewayMaxDistanceToBoundary)
+         // Filter 1: Must be near range bottom (support) - dynamic boundary
+         if(distanceFromLow > effectiveBoundary)
          {
             if(InpEnableDetailedLogs)
                Print("BLOCKED: Sideways BUY too far from support (", 
-                     DoubleToString(distanceFromLow, 1), " pips from low)");
+                     DoubleToString(distanceFromLow, 1), " pips from low, max=", DoubleToString(effectiveBoundary, 1), ")");
             return;
          }
          
@@ -1682,6 +2136,9 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          }
          
          LogSignalEvent("SIGNAL", "Sideway_Buy", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+         _WriteLogLine("SIGNAL: SIDEWAYS BUY | RSI=" + DoubleToString(rsi[0], 1)
+                       + " | Range: " + DoubleToString(rangeLow, _Digits) + "-" + DoubleToString(rangeHigh, _Digits)
+                       + " | Dist support: " + DoubleToString(distanceFromLow, 1) + " pips");
          OpenPosition(true, GetSidewayStopLossPips(), GetSidewayTakeProfitPips(), "Sideway_Buy", atr);
          return;
       }
@@ -1697,12 +2154,12 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
             return;
          }
          
-         // Filter 1: Must be near range top (resistance)
-         if(distanceFromHigh > InpSidewayMaxDistanceToBoundary)
+         // Filter 1: Must be near range top (resistance) - dynamic boundary
+         if(distanceFromHigh > effectiveBoundary)
          {
             if(InpEnableDetailedLogs)
                Print("BLOCKED: Sideways SELL too far from resistance (", 
-                     DoubleToString(distanceFromHigh, 1), " pips from high)");
+                     DoubleToString(distanceFromHigh, 1), " pips from high, max=", DoubleToString(effectiveBoundary, 1), ")");
             return;
          }
          
@@ -1738,9 +2195,13 @@ void AnalyzeAndTrade(const double &rsi[], double emaFast, double emaSlow,
          }
          
          LogSignalEvent("SIGNAL", "Sideway_Sell", "Confirmed", rsi[0], avgVolume, currentVolume, atr, avgATR, adx, marketStateStr);
+         _WriteLogLine("SIGNAL: SIDEWAYS SELL | RSI=" + DoubleToString(rsi[0], 1)
+                       + " | Range: " + DoubleToString(rangeLow, _Digits) + "-" + DoubleToString(rangeHigh, _Digits)
+                       + " | Dist resistance: " + DoubleToString(distanceFromHigh, 1) + " pips");
          OpenPosition(false, GetSidewayStopLossPips(), GetSidewayTakeProfitPips(), "Sideway_Sell", atr);
          return;
       }
+   } // EURUSD Sideways filter
    }
    
    if(InpEnableDetailedLogs)
@@ -2012,8 +2473,25 @@ double CalculateLotSize(double entryPrice, int slPips)
 //+------------------------------------------------------------------+
 void OpenPosition(bool isBuy, int slPips, int tpPips, string comment, double currentATR = 0)
 {
+   // v4.5: ATR-based SL/TP (auto-adapts per symbol volatility)
+   int effectiveSL = slPips;
+   int effectiveTP = tpPips;
+   if(InpUseATRBasedSL && currentATR > 0)
+   {
+      int atrSL = GetATRBasedSLPips(currentATR);
+      if(atrSL > 0)
+      {
+         effectiveSL = atrSL;
+         effectiveTP = GetATRBasedTPPips(atrSL);
+         if(InpEnableDetailedLogs)
+            Print("  ATR-Based SL/TP: ATR=", DoubleToString(currentATR, _Digits), 
+                  " | SL=", effectiveSL, " pips (was ", slPips, ") | TP=", effectiveTP, 
+                  " pips (was ", tpPips, ") | R:R=1:", DoubleToString(InpATRTPRatio, 1));
+      }
+   }
+   
    double price = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   double lot = CalculateLotSize(price, slPips);
+   double lot = CalculateLotSize(price, effectiveSL);
    
    // CalculateLotSize returns -1 if even min lot is too risky for current balance
    if(lot < 0)
@@ -2089,13 +2567,19 @@ void OpenPosition(bool isBuy, int slPips, int tpPips, string comment, double cur
    
    double sl, tp;
    
-   CalculateSLTP_FixedPips(price, isBuy, slPips, tpPips, sl, tp);
+   CalculateSLTP_FixedPips(price, isBuy, effectiveSL, effectiveTP, sl, tp);
    
    Print("====================================");
    Print("OPENING ", isBuy ? "BUY" : "SELL", " - ", _Symbol);
    Print("Type: ", comment);
    Print("Entry: ", price, " | SL: ", sl, " | TP: ", tp, " | Lot: ", lot);
    Print("====================================");
+   _WriteLogLine("OPENING " + (isBuy ? "BUY" : "SELL") + " | " + _Symbol
+                 + " | Type: " + comment
+                 + " | Entry: " + DoubleToString(price, _Digits)
+                 + " | SL: " + DoubleToString(sl, _Digits)
+                 + " | TP: " + DoubleToString(tp, _Digits)
+                 + " | Lot: " + DoubleToString(lot, 2));
    
    // Validation
    if(isBuy && (sl >= price || tp <= price))
@@ -2124,12 +2608,20 @@ void OpenPosition(bool isBuy, int slPips, int tpPips, string comment, double cur
    if(result)
    {
       Print("SUCCESS: Order placed | Ticket: ", trade.ResultOrder());
+      _WriteLogLine("SUCCESS: Ticket #" + IntegerToString((long)trade.ResultOrder()) + " | " + comment
+                    + " | " + (isBuy ? "BUY" : "SELL") + " " + DoubleToString(lot, 2) + " lot"
+                    + " | Entry: " + DoubleToString(price, _Digits)
+                    + " | SL: " + DoubleToString(sl, _Digits)
+                    + " | TP: " + DoubleToString(tp, _Digits));
       LogTradeEvent("SUCCESS", comment, isBuy, price, sl, tp, lot, trade.ResultRetcode(), trade.ResultOrder());
       g_lastTradeTime = TimeCurrent();
+      g_dailyTradeCount++;  // v4.5: Increment daily counter
    }
    else
    {
       Print("FAILED: Error ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
+      _WriteLogLine("FAILED: " + comment + " | Error " + IntegerToString(trade.ResultRetcode())
+                    + " - " + trade.ResultRetcodeDescription());
       LogTradeEvent("FAILED", comment, isBuy, price, sl, tp, lot, trade.ResultRetcode(), 0);
    }
 }
@@ -2240,6 +2732,10 @@ void ManageOpenPositions()
                         " | Confirm candles: ", confirmCount, "/3",
                         " | P/L: ", DoubleToString(profitPips, 1), " pips");
                }
+               _WriteLogLine("STALE EXIT: Ticket #" + IntegerToString((long)ticket)
+                             + " | " + (posType == POSITION_TYPE_BUY ? "BUY" : "SELL")
+                             + " | P/L: " + DoubleToString(profitPips, 1) + " pips"
+                             + " | 3 bars no breakout");
                trade.PositionClose(ticket);
                continue;  // Position closed, skip to next
             }
@@ -2266,8 +2762,8 @@ void ManageOpenPositions()
       {
          trailDistancePips = (int)MathRound((currentATR * InpTrailingATRMultiplier) / pipValue);
          trailActivatePips = (int)MathRound((currentATR * InpTrailingATRMultiplier * 1.5) / pipValue);
-         if(trailDistancePips < 20) trailDistancePips = 20;
-         if(trailActivatePips < 30) trailActivatePips = 30;
+         if(trailDistancePips < 40) trailDistancePips = 40;   // Was 20 - too tight
+         if(trailActivatePips < 60) trailActivatePips = 60;   // Was 30 - too early
       }
       
       if(InpUseTrailingStop && profitPips >= trailActivatePips)
@@ -2339,6 +2835,10 @@ void ManageOpenPositions()
             {
                if(InpEnableDetailedLogs)
                   Print("SUCCESS: ", updateReason, " applied");
+               _WriteLogLine(updateReason + ": Ticket #" + IntegerToString((long)ticket)
+                             + " | Profit: " + DoubleToString(profitPips, 1) + " pips"
+                             + " | Old SL: " + DoubleToString(currentSL, digits)
+                             + " | New SL: " + DoubleToString(newSL, digits));
             }
             else
             {
