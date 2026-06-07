@@ -24,7 +24,7 @@
 //| - Same magic number (123456) - manages existing v4.5 positions   |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024"
-#property version   "5.00"
+#property version   "5.10"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -42,8 +42,26 @@ input int    InpEMA_M15 = 34;                // M15 EMA period (pullback zone)
 input int    InpEMA_H1_Fast = 20;            // H1 Fast EMA (trend direction)
 input int    InpEMA_H1_Slow = 50;            // H1 Slow EMA (trend direction)
 input double InpPullbackATRZone = 0.3;       // Pullback tolerance (0.3 = within 30% of ATR from EMA)
+input bool   InpUseTrendStrengthFilter = true; // Require trend-strength confirmation on H1
+input int    InpH1ADXPeriod = 14;            // H1 ADX period for trend strength
+input double InpMinH1ADX = 18.0;             // Minimum H1 ADX to allow entries
+input double InpMinH1EMASpreadATR = 0.10;    // Min |EMAfast-EMAslow| as fraction of H1 ATR
+input bool   InpUseEMASlopeFilter = true;    // Require M15 EMA slope direction and minimum slope
+input double InpMinM15EMASlopeATR = 0.03;    // Min |EMA34[1]-EMA34[2]| as fraction of M15 ATR
+input double InpMinBounceBodyRatio = 0.50;   // Min candle body/range ratio for bounce quality
+input double InpMaxCloseToExtremeRatio = 0.25; // Close must be near candle extreme for strong bounce
 input bool   InpAllowBuy = true;             // Allow BUY signals
 input bool   InpAllowSell = true;            // Allow SELL signals
+
+input group "=== Symbol Selection ==="
+input bool   InpEnableSymbolFilter = true;   // Only trade symbols explicitly enabled below
+input bool   InpTradeAUDUSD = true;          // Preferred performer
+input bool   InpTradeUSDJPY = true;          // Preferred performer
+input bool   InpTradeUSDCAD = true;          // Preferred performer
+input bool   InpTradeEURUSD = false;         // Optional
+input bool   InpTradeGBPUSD = false;         // Optional
+input bool   InpTradeXAUUSD = false;         // Disabled by default (historically weak)
+input bool   InpTradeBTCUSD = false;         // Disabled by default (historically weak)
 
 input group "=== Volume Filter ==="
 input bool   InpUseVolumeFilter = true;      // Only trade when volume > avg × multiplier
@@ -61,31 +79,47 @@ input int    InpFixedSLPips = 50;            // Fallback SL if ATR unavailable
 input int    InpFixedTPPips = 125;           // Fallback TP if ATR unavailable
 
 input group "=== Risk Management ==="
-input double InpRiskPercent = 3.0;           // Risk % per trade
+input double InpRiskPercent = 0.75;          // Risk % per trade (defensive default)
 input double InpMaxLotSize = 0.5;            // Max lot size (0=no limit)
 input double InpMaxSafetyPercent = 10.0;     // Hard max risk % (safety cap)
 input double InpMaxMarginPercent = 30.0;     // Max margin % per trade
 input double InpSmallAccountThreshold = 300.0; // Below this → use min lot
 
 input group "=== Position Management ==="
-input int    InpBreakevenPips = 50;          // Move SL to entry at +X pips (0=disabled)
+input int    InpBreakevenPips = 50;          // Move SL to BE-zone at +X pips (0=disabled)
+input int    InpBreakevenLockPips = 15;      // Lock profit at breakeven (SL = entry + N pips, 0=plain BE at entry)
 input bool   InpUseTrailingStop = true;      // Enable trailing stop
 input double InpTrailingATRMultiplier = 2.0; // Trail distance = ATR × this
-input int    InpTrailingMinDistance = 40;     // Min trailing distance in pips
-input int    InpTrailingMinActivate = 60;    // Min profit pips to activate trailing
+input int    InpTrailingMinDistance = 50;    // Min trailing distance in pips (raised from 40 to reduce noise stop-outs)
+input int    InpTrailingMinActivate = 70;    // Min profit pips to activate trailing
+input int    InpMinSLUpdatePips = 8;         // Minimum SL improvement in pips before sending modify
+input int    InpMinSecondsBetweenSLUpdates = 30; // Min seconds between SL updates per ticket
+
+input group "=== Portfolio Risk Control ==="
+input double InpMaxDailyLossPercent = 2.0;   // Stop opening trades when daily loss exceeds X% of start-of-day equity (0=disabled)
+input double InpMaxWeeklyLossPercent = 4.0;  // Stop opening trades when weekly loss exceeds X% of start-of-week equity (0=disabled)
+input int    InpMaxTotalPositions = 2;       // Max total positions across ALL symbols with this magic (0=unlimited)
+input bool   InpUseUSDBiasCap = true;        // Limit correlated USD directional exposure
+input int    InpMaxUSDBiasPositions = 1;     // Max open positions with same USD bias (+1 long USD, -1 short USD)
 
 input group "=== Trading Rules ==="
-input int    InpCooldownSeconds = 3600;      // Min seconds between trades (1 hour)
-input int    InpMaxTradesPerDay = 3;         // Max new trades per day (0=unlimited)
-input int    InpMaxPositions = 2;            // Max positions per symbol
+input int    InpCooldownSeconds = 7200;      // Min seconds between trades
+input int    InpMaxTradesPerDay = 2;         // Max new trades per day (0=unlimited)
+input int    InpMaxPositions = 1;            // Max positions per symbol
 input int    InpMaxSpreadPips = 10;          // Max spread to enter trade
 input int    InpMagicNumber = 123456;        // EA magic number (same as v4.5 to manage old positions)
 
 input group "=== Session Filter ==="
-input bool   InpUseTimeFilter = false;       // Enable session filter (auto-off for crypto)
+input bool   InpUseTimeFilter = true;        // Enable session filter (auto-off for crypto)
 input bool   InpTradeAsianSession = false;   // Asian: 1:00-9:00 UTC
 input bool   InpTradeEuropeanSession = true; // European: 7:00-16:00 UTC
 input bool   InpTradeUSSession = true;       // US: 13:00-22:00 UTC
+input int    InpAsianStartHourUTC = 1;       // Asian session start hour (UTC)
+input int    InpAsianEndHourUTC = 9;         // Asian session end hour (UTC)
+input int    InpEuropeanStartHourUTC = 7;    // European session start hour (UTC)
+input int    InpEuropeanEndHourUTC = 16;     // European session end hour (UTC)
+input int    InpUSStartHourUTC = 13;         // US session start hour (UTC)
+input int    InpUSEndHourUTC = 18;           // US session end hour (UTC, early US only)
 
 input group "=== Debug ==="
 input bool   InpEnableDetailedLogs = true;   // Verbose logging to Experts tab
@@ -99,11 +133,26 @@ datetime g_lastTradeTime = 0;
 int      g_dailyTradeCount = 0;
 int      g_lastTradeDay = 0;
 
+// Daily loss tracking (per-day P&L cap)
+int      g_dailyLossDay = 0;
+double   g_dailyStartEquity = 0;
+
+// Weekly loss tracking (per-week P&L cap)
+int      g_weeklyLossWeek = -1;
+double   g_weeklyStartEquity = 0;
+
+// Per-ticket SL update throttle
+ulong    g_slUpdateTickets[];
+datetime g_slUpdateTimes[];
+int      g_slUpdateCount = 0;
+
 // Indicator handles
 int g_handleEMA34;         // M15 EMA34 (pullback zone)
 int g_handleATR;           // M15 ATR (SL/TP, pullback zone, trailing)
 int g_handleEMAFast_H1;   // H1 EMA20 (trend direction)
 int g_handleEMASlow_H1;   // H1 EMA50 (trend direction)
+int g_handleADX_H1;       // H1 ADX (trend strength)
+int g_handleATR_H1;       // H1 ATR (normalize EMA spread)
 
 // Position close tracking
 ulong g_trackedTickets[];
@@ -125,6 +174,73 @@ bool IsCryptoSymbol()
            StringFind(symbol, "XRP") >= 0 ||
            StringFind(symbol, "LTC") >= 0 ||
            StringFind(symbol, "CRYPTO") >= 0);
+}
+
+bool IsSymbolEnabledByInput()
+{
+   if(!InpEnableSymbolFilter)
+      return true;
+
+   string symbol = _Symbol;
+   if(StringFind(symbol, "AUDUSD") >= 0) return InpTradeAUDUSD;
+   if(StringFind(symbol, "USDJPY") >= 0) return InpTradeUSDJPY;
+   if(StringFind(symbol, "USDCAD") >= 0) return InpTradeUSDCAD;
+   if(StringFind(symbol, "EURUSD") >= 0) return InpTradeEURUSD;
+   if(StringFind(symbol, "GBPUSD") >= 0) return InpTradeGBPUSD;
+   if(StringFind(symbol, "XAU") >= 0 || StringFind(symbol, "GOLD") >= 0) return InpTradeXAUUSD;
+   if(StringFind(symbol, "BTC") >= 0) return InpTradeBTCUSD;
+
+   // Unmapped symbols are blocked when symbol filter is enabled.
+   return false;
+}
+
+int GetUSDBiasForTrade(const string symbol, const bool isBuy)
+{
+   int usdPos = StringFind(symbol, "USD");
+   if(usdPos < 0)
+      return 0;
+
+   bool usdIsBase = (usdPos == 0);
+   if(usdIsBase)
+      return isBuy ? 1 : -1;
+
+   return isBuy ? -1 : 1;
+}
+
+int CountUSDBiasPositions(const int bias)
+{
+   if(bias == 0)
+      return 0;
+
+   int count = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+
+      string posSymbol = PositionGetString(POSITION_SYMBOL);
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      bool posIsBuy = (posType == POSITION_TYPE_BUY);
+      int posBias = GetUSDBiasForTrade(posSymbol, posIsBuy);
+      if(posBias == bias)
+         count++;
+   }
+   return count;
+}
+
+bool IsUSDBiasCapHit(const bool candidateIsBuy)
+{
+   if(!InpUseUSDBiasCap || InpMaxUSDBiasPositions <= 0)
+      return false;
+
+   int candidateBias = GetUSDBiasForTrade(_Symbol, candidateIsBuy);
+   if(candidateBias == 0)
+      return false;
+
+   int sameBiasCount = CountUSDBiasPositions(candidateBias);
+   return (sameBiasCount >= InpMaxUSDBiasPositions);
 }
 
 double GetPipValue()
@@ -203,6 +319,104 @@ int CountOpenPositions()
 int GetMaxPositions()
 {
    return InpMaxPositions;
+}
+
+//+------------------------------------------------------------------+
+//| Portfolio Risk: Count positions across ALL symbols (same magic)  |
+//+------------------------------------------------------------------+
+int CountTotalPositionsAllSymbols()
+{
+   int count = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      if(PositionSelectByTicket(ticket))
+      {
+         if(PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+            count++;
+      }
+   }
+   return count;
+}
+
+//+------------------------------------------------------------------+
+//| Daily Loss Tracking                                               |
+//+------------------------------------------------------------------+
+void UpdateDailyEquityBaseline()
+{
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   int today = dt.day_of_year;
+   if(today != g_dailyLossDay)
+   {
+      g_dailyLossDay = today;
+      g_dailyStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+      if(InpEnableDetailedLogs)
+         PrintLog("DAILY RESET: Start equity = $" + DoubleToString(g_dailyStartEquity, 2));
+   }
+}
+
+bool IsDailyLossLimitHit()
+{
+   if(InpMaxDailyLossPercent <= 0) return false;
+   UpdateDailyEquityBaseline();
+   if(g_dailyStartEquity <= 0) return false;
+   double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double lossPct = ((g_dailyStartEquity - currentEquity) / g_dailyStartEquity) * 100.0;
+   return (lossPct >= InpMaxDailyLossPercent);
+}
+
+void UpdateWeeklyEquityBaseline()
+{
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(), dt);
+   int weekIndex = dt.day_of_year / 7;
+   if(weekIndex != g_weeklyLossWeek)
+   {
+      g_weeklyLossWeek = weekIndex;
+      g_weeklyStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+      if(InpEnableDetailedLogs)
+         PrintLog("WEEKLY RESET: Start equity = $" + DoubleToString(g_weeklyStartEquity, 2));
+   }
+}
+
+bool IsWeeklyLossLimitHit()
+{
+   if(InpMaxWeeklyLossPercent <= 0) return false;
+   UpdateWeeklyEquityBaseline();
+   if(g_weeklyStartEquity <= 0) return false;
+   double currentEquity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double lossPct = ((g_weeklyStartEquity - currentEquity) / g_weeklyStartEquity) * 100.0;
+   return (lossPct >= InpMaxWeeklyLossPercent);
+}
+
+datetime GetLastSLUpdateTime(ulong ticket)
+{
+   for(int i = 0; i < g_slUpdateCount; i++)
+   {
+      if(g_slUpdateTickets[i] == ticket)
+         return g_slUpdateTimes[i];
+   }
+   return 0;
+}
+
+void SetLastSLUpdateTime(ulong ticket, datetime updateTime)
+{
+   for(int i = 0; i < g_slUpdateCount; i++)
+   {
+      if(g_slUpdateTickets[i] == ticket)
+      {
+         g_slUpdateTimes[i] = updateTime;
+         return;
+      }
+   }
+   int newSize = g_slUpdateCount + 1;
+   ArrayResize(g_slUpdateTickets, newSize);
+   ArrayResize(g_slUpdateTimes, newSize);
+   g_slUpdateTickets[g_slUpdateCount] = ticket;
+   g_slUpdateTimes[g_slUpdateCount] = updateTime;
+   g_slUpdateCount = newSize;
 }
 
 //+------------------------------------------------------------------+
@@ -478,9 +692,12 @@ int OnInit()
    g_handleATR = iATR(_Symbol, PERIOD_M15, InpATRPeriod);
    g_handleEMAFast_H1 = iMA(_Symbol, PERIOD_H1, InpEMA_H1_Fast, 0, MODE_EMA, PRICE_CLOSE);
    g_handleEMASlow_H1 = iMA(_Symbol, PERIOD_H1, InpEMA_H1_Slow, 0, MODE_EMA, PRICE_CLOSE);
+   g_handleADX_H1 = iADX(_Symbol, PERIOD_H1, InpH1ADXPeriod);
+   g_handleATR_H1 = iATR(_Symbol, PERIOD_H1, InpATRPeriod);
    
    if(g_handleEMA34 == INVALID_HANDLE || g_handleATR == INVALID_HANDLE ||
-      g_handleEMAFast_H1 == INVALID_HANDLE || g_handleEMASlow_H1 == INVALID_HANDLE)
+      g_handleEMAFast_H1 == INVALID_HANDLE || g_handleEMASlow_H1 == INVALID_HANDLE ||
+      g_handleADX_H1 == INVALID_HANDLE || g_handleATR_H1 == INVALID_HANDLE)
    {
       Print("FATAL: Failed to create indicator handles!");
       return(INIT_FAILED);
@@ -536,6 +753,12 @@ int OnInit()
    Print("  2. M15 Pullback: Price touches EMA", InpEMA_M15, " zone (ATR x ", DoubleToString(InpPullbackATRZone, 1), ")");
    Print("  3. M15 Candle: Closes in trend direction above/below EMA");
    Print("  4. Volume: ", InpUseVolumeFilter ? "Avg x " + DoubleToString(InpVolumeMultiplier, 1) + " <= Vol <= Avg x " + (InpVolumeMaxMultiplier > 0 ? DoubleToString(InpVolumeMaxMultiplier, 1) : "∞") + " (" + IntegerToString(InpVolumePeriod) + " bars, blocks news spikes)" : "DISABLED");
+   if(InpUseTrendStrengthFilter)
+      Print("  5. H1 Strength: ADX >= ", DoubleToString(InpMinH1ADX, 1), " and EMA spread >= ATR x ", DoubleToString(InpMinH1EMASpreadATR, 2));
+   if(InpUseEMASlopeFilter)
+      Print("  6. M15 EMA slope: |dEMA| >= ATR x ", DoubleToString(InpMinM15EMASlopeATR, 2), " in trade direction");
+   Print("  7. Bounce quality: body/range >= ", DoubleToString(InpMinBounceBodyRatio, 2),
+         " and close near candle extreme (<=", DoubleToString(InpMaxCloseToExtremeRatio, 2), ")");
    Print("  BUY: ", InpAllowBuy ? "YES" : "NO");
    Print("  SELL: ", InpAllowSell ? "YES" : "NO");
    Print("------------------------------------");
@@ -544,19 +767,27 @@ int OnInit()
    Print("  Fallback (no ATR): SL=", InpFixedSLPips, " TP=", InpFixedTPPips);
    Print("------------------------------------");
    Print("POSITION MGMT:");
-   Print("  Breakeven: ", InpBreakevenPips > 0 ? IntegerToString(InpBreakevenPips) + " pips" : "DISABLED");
-   Print("  Trailing: ", InpUseTrailingStop ? "ATR x " + DoubleToString(InpTrailingATRMultiplier, 1) + " (min " + IntegerToString(InpTrailingMinDistance) + " pips)" : "DISABLED");
+   Print("  Breakeven: ", InpBreakevenPips > 0 ? IntegerToString(InpBreakevenPips) + " pips (lock +" + IntegerToString(InpBreakevenLockPips) + " pips profit)" : "DISABLED");
+   Print("  Trailing: ", InpUseTrailingStop ? "ATR x " + DoubleToString(InpTrailingATRMultiplier, 1) + " (min " + IntegerToString(InpTrailingMinDistance) + " pips, activate " + IntegerToString(InpTrailingMinActivate) + " pips)" : "DISABLED");
+   Print("------------------------------------");
+   Print("PORTFOLIO RISK:");
+   Print("  Max total positions (all symbols): ", InpMaxTotalPositions > 0 ? IntegerToString(InpMaxTotalPositions) : "unlimited");
+   Print("  USD bias cap: ", (InpUseUSDBiasCap && InpMaxUSDBiasPositions > 0) ? ("max " + IntegerToString(InpMaxUSDBiasPositions) + " per USD direction") : "DISABLED");
+   Print("  Daily loss circuit breaker: ", InpMaxDailyLossPercent > 0 ? DoubleToString(InpMaxDailyLossPercent, 1) + "%" : "DISABLED");
+   Print("  Weekly loss circuit breaker: ", InpMaxWeeklyLossPercent > 0 ? DoubleToString(InpMaxWeeklyLossPercent, 1) + "%" : "DISABLED");
    Print("------------------------------------");
    Print("RULES:");
    Print("  Max positions/symbol: ", InpMaxPositions);
    Print("  Daily cap: ", InpMaxTradesPerDay > 0 ? IntegerToString(InpMaxTradesPerDay) : "unlimited");
    Print("  Cooldown: ", InpCooldownSeconds, "s (", InpCooldownSeconds/60, " min)");
+    Print("  SL update throttle: >=", InpMinSLUpdatePips, " pips and >=", InpMinSecondsBetweenSLUpdates, " sec");
    Print("  Max spread: ", InpMaxSpreadPips, " pips");
    Print("------------------------------------");
    Print("Symbol: ", _Symbol, " | Pip: ", DoubleToString(initPipValue, _Digits));
    Print("Filling: ", ((fillingMode & SYMBOL_FILLING_FOK) != 0) ? "FOK" : 
          ((fillingMode & SYMBOL_FILLING_IOC) != 0) ? "IOC" : "RETURN");
    Print("Magic: ", InpMagicNumber, " (same as v4.5 - manages old positions)");
+   Print("Symbol filter: ", InpEnableSymbolFilter ? "ENABLED" : "DISABLED", " | Current symbol enabled: ", IsSymbolEnabledByInput() ? "YES" : "NO");
    
    // Symbol-specific info
    if(StringFind(_Symbol, "XAU") >= 0 || StringFind(_Symbol, "GOLD") >= 0)
@@ -574,9 +805,9 @@ int OnInit()
    else if(InpUseTimeFilter)
    {
       Print("Sessions (UTC): ", 
-            (InpTradeAsianSession ? "Asian(1-9) " : ""),
-            (InpTradeEuropeanSession ? "European(7-16) " : ""),
-            (InpTradeUSSession ? "US(13-22)" : ""));
+            (InpTradeAsianSession ? ("Asian(" + IntegerToString(InpAsianStartHourUTC) + "-" + IntegerToString(InpAsianEndHourUTC) + ") ") : ""),
+            (InpTradeEuropeanSession ? ("European(" + IntegerToString(InpEuropeanStartHourUTC) + "-" + IntegerToString(InpEuropeanEndHourUTC) + ") ") : ""),
+            (InpTradeUSSession ? ("US(" + IntegerToString(InpUSStartHourUTC) + "-" + IntegerToString(InpUSEndHourUTC) + ")") : ""));
    }
    else
       Print("Time filter: DISABLED (24/7)");
@@ -584,6 +815,10 @@ int OnInit()
    int existingPos = CountOpenPositions();
    if(existingPos > 0)
       Print("EXISTING POSITIONS: ", existingPos, " on ", _Symbol, " (will manage with trailing/BE)");
+   
+   // Initialize daily loss baseline
+   UpdateDailyEquityBaseline();
+   UpdateWeeklyEquityBaseline();
    
    if(InpEnableFileLogging)
    {
@@ -608,6 +843,8 @@ void OnDeinit(const int reason)
    IndicatorRelease(g_handleATR);
    IndicatorRelease(g_handleEMAFast_H1);
    IndicatorRelease(g_handleEMASlow_H1);
+   IndicatorRelease(g_handleADX_H1);
+   IndicatorRelease(g_handleATR_H1);
    
    Comment("");
    Print("EA v5.0 STOPPED - Reason: ", reason);
@@ -639,8 +876,10 @@ void OnTick()
    double atrBuf[];
    double h1Fast[];
    double h1Slow[];
+   double h1Adx[];
+   double h1Atr[];
    
-   if(!GetIndicatorValues(ema34, atrBuf, h1Fast, h1Slow))
+   if(!GetIndicatorValues(ema34, atrBuf, h1Fast, h1Slow, h1Adx, h1Atr))
    {
       if(InpEnableDetailedLogs)
          Print("WARNING: GetIndicatorValues() failed - skipping bar");
@@ -652,23 +891,28 @@ void OnTick()
       return;
    
    // Analyze and trade
-   AnalyzeAndTrade(ema34, atrBuf, h1Fast, h1Slow);
+   AnalyzeAndTrade(ema34, atrBuf, h1Fast, h1Slow, h1Adx, h1Atr);
 }
 
 //+------------------------------------------------------------------+
 //| Get Indicator Values                                              |
 //+------------------------------------------------------------------+
-bool GetIndicatorValues(double &ema34[], double &atrBuf[], double &h1Fast[], double &h1Slow[])
+bool GetIndicatorValues(double &ema34[], double &atrBuf[], double &h1Fast[], double &h1Slow[],
+                        double &h1Adx[], double &h1Atr[])
 {
    ArraySetAsSeries(ema34, true);
    ArraySetAsSeries(atrBuf, true);
    ArraySetAsSeries(h1Fast, true);
    ArraySetAsSeries(h1Slow, true);
+   ArraySetAsSeries(h1Adx, true);
+   ArraySetAsSeries(h1Atr, true);
    
    if(CopyBuffer(g_handleEMA34, 0, 0, 3, ema34) < 3) return false;
    if(CopyBuffer(g_handleATR, 0, 0, 3, atrBuf) < 3) return false;
    if(CopyBuffer(g_handleEMAFast_H1, 0, 0, 2, h1Fast) < 2) return false;
    if(CopyBuffer(g_handleEMASlow_H1, 0, 0, 2, h1Slow) < 2) return false;
+   if(CopyBuffer(g_handleADX_H1, 0, 0, 2, h1Adx) < 2) return false;
+   if(CopyBuffer(g_handleATR_H1, 0, 0, 2, h1Atr) < 2) return false;
    
    return true;
 }
@@ -689,6 +933,13 @@ bool CheckTradingConditions()
       if(InpEnableDetailedLogs) Print("BLOCKED: EA trading not allowed");
       return false;
    }
+
+   if(!IsSymbolEnabledByInput())
+   {
+      if(InpEnableDetailedLogs)
+         Print("BLOCKED: Symbol filter disabled this symbol (", _Symbol, ")");
+      return false;
+   }
    
    // Time filter (auto-disabled for crypto)
    if(InpUseTimeFilter && !IsCryptoSymbol())
@@ -698,9 +949,9 @@ bool CheckTradingConditions()
       int currentHour = timeNow.hour;
       
       bool inSession = false;
-      if(InpTradeAsianSession && currentHour >= 1 && currentHour < 9) inSession = true;
-      if(InpTradeEuropeanSession && currentHour >= 7 && currentHour < 16) inSession = true;
-      if(InpTradeUSSession && currentHour >= 13 && currentHour < 22) inSession = true;
+      if(InpTradeAsianSession && currentHour >= InpAsianStartHourUTC && currentHour < InpAsianEndHourUTC) inSession = true;
+      if(InpTradeEuropeanSession && currentHour >= InpEuropeanStartHourUTC && currentHour < InpEuropeanEndHourUTC) inSession = true;
+      if(InpTradeUSSession && currentHour >= InpUSStartHourUTC && currentHour < InpUSEndHourUTC) inSession = true;
       
       if(!inSession)
       {
@@ -725,6 +976,42 @@ bool CheckTradingConditions()
    {
       if(InpEnableDetailedLogs)
          Print("BLOCKED: Max positions ", currentPositions, "/", GetMaxPositions());
+      return false;
+   }
+   
+   // Portfolio cap: max positions across ALL symbols (anti-correlation cascade)
+   if(InpMaxTotalPositions > 0)
+   {
+      int totalPos = CountTotalPositionsAllSymbols();
+      if(totalPos >= InpMaxTotalPositions)
+      {
+         if(InpEnableDetailedLogs)
+            PrintLog("BLOCKED: Portfolio cap " + IntegerToString(totalPos) + "/" + IntegerToString(InpMaxTotalPositions) + " (all symbols, magic " + IntegerToString(InpMagicNumber) + ")");
+         return false;
+      }
+   }
+   
+   // Daily loss circuit breaker
+   if(IsDailyLossLimitHit())
+   {
+      if(InpEnableDetailedLogs)
+      {
+         double curEq = AccountInfoDouble(ACCOUNT_EQUITY);
+         double lossPct = ((g_dailyStartEquity - curEq) / g_dailyStartEquity) * 100.0;
+         PrintLog("BLOCKED: Daily loss limit hit " + DoubleToString(lossPct, 2) + "% >= " + DoubleToString(InpMaxDailyLossPercent, 2) + "% (start $" + DoubleToString(g_dailyStartEquity, 2) + " -> now $" + DoubleToString(curEq, 2) + ")");
+      }
+      return false;
+   }
+
+   // Weekly loss circuit breaker
+   if(IsWeeklyLossLimitHit())
+   {
+      if(InpEnableDetailedLogs)
+      {
+         double curEqW = AccountInfoDouble(ACCOUNT_EQUITY);
+         double lossPctW = ((g_weeklyStartEquity - curEqW) / g_weeklyStartEquity) * 100.0;
+         PrintLog("BLOCKED: Weekly loss limit hit " + DoubleToString(lossPctW, 2) + "% >= " + DoubleToString(InpMaxWeeklyLossPercent, 2) + "% (start $" + DoubleToString(g_weeklyStartEquity, 2) + " -> now $" + DoubleToString(curEqW, 2) + ")");
+      }
       return false;
    }
    
@@ -760,7 +1047,8 @@ bool CheckTradingConditions()
 //| Core Signal Logic: EMA Pullback Trend Following                   |
 //+------------------------------------------------------------------+
 void AnalyzeAndTrade(const double &ema34[], const double &atrBuf[],
-                     const double &h1Fast[], const double &h1Slow[])
+                     const double &h1Fast[], const double &h1Slow[],
+                     const double &h1Adx[], const double &h1Atr[])
 {
    // H1 trend direction
    bool h1Uptrend  = (h1Fast[0] > h1Slow[0]);
@@ -774,9 +1062,30 @@ void AnalyzeAndTrade(const double &ema34[], const double &atrBuf[],
    
    double m15Ema   = ema34[1];
    double atr      = atrBuf[1];
+   double h1AdxVal = h1Adx[0];
+   double h1AtrVal = h1Atr[0];
    
    // Pullback zone: how close price needs to get to EMA34
    double pullbackZone = atr * InpPullbackATRZone;
+
+   // Trend strength filters
+   double h1EmaSpread = MathAbs(h1Fast[0] - h1Slow[0]);
+   bool adxStrongEnough = (h1AdxVal >= InpMinH1ADX);
+   bool emaSpreadStrongEnough = (h1AtrVal > 0) ? (h1EmaSpread >= h1AtrVal * InpMinH1EMASpreadATR) : false;
+   bool trendStrengthOK = !InpUseTrendStrengthFilter || (adxStrongEnough && emaSpreadStrongEnough);
+
+   // M15 EMA slope filters
+   double emaSlope = ema34[1] - ema34[2];
+   bool slopeBuyOK = !InpUseEMASlopeFilter || ((emaSlope > 0) && (MathAbs(emaSlope) >= atr * InpMinM15EMASlopeATR));
+   bool slopeSellOK = !InpUseEMASlopeFilter || ((emaSlope < 0) && (MathAbs(emaSlope) >= atr * InpMinM15EMASlopeATR));
+
+   // Candle quality filters
+   double barRange = barHigh - barLow;
+   bool validRange = (barRange > 0);
+   double body = MathAbs(barClose - barOpen);
+   bool bodyStrong = validRange ? ((body / barRange) >= InpMinBounceBodyRatio) : false;
+   bool closeNearHigh = validRange ? (((barHigh - barClose) / barRange) <= InpMaxCloseToExtremeRatio) : false;
+   bool closeNearLow = validRange ? (((barClose - barLow) / barRange) <= InpMaxCloseToExtremeRatio) : false;
    
    // Current ATR for SL/TP (use bar[0] for most current reading)
    double currentATR = atrBuf[0];
@@ -832,16 +1141,16 @@ void AnalyzeAndTrade(const double &ema34[], const double &atrBuf[],
    // 2. M15 bar[1] low reached EMA34 zone (pullback)
    // 3. M15 bar[1] closed above EMA34 with bullish body (bounce)
    bool pullbackForBuy = (barLow <= m15Ema + pullbackZone);
-   bool bounceForBuy   = (barClose > m15Ema) && (barClose > barOpen);
-   bool buySignal      = InpAllowBuy && h1Uptrend && pullbackForBuy && bounceForBuy && volumeOK;
+   bool bounceForBuy   = (barClose > m15Ema) && (barClose > barOpen) && bodyStrong && closeNearHigh;
+   bool buySignal      = InpAllowBuy && h1Uptrend && trendStrengthOK && slopeBuyOK && pullbackForBuy && bounceForBuy && volumeOK;
    
    // === SELL Signal ===
    // 1. H1 shows downtrend (EMA20 < EMA50)
    // 2. M15 bar[1] high reached EMA34 zone (pullback)
    // 3. M15 bar[1] closed below EMA34 with bearish body (bounce)
    bool pullbackForSell = (barHigh >= m15Ema - pullbackZone);
-   bool bounceForSell   = (barClose < m15Ema) && (barClose < barOpen);
-   bool sellSignal      = InpAllowSell && h1Downtrend && pullbackForSell && bounceForSell && volumeOK;
+   bool bounceForSell   = (barClose < m15Ema) && (barClose < barOpen) && bodyStrong && closeNearLow;
+   bool sellSignal      = InpAllowSell && h1Downtrend && trendStrengthOK && slopeSellOK && pullbackForSell && bounceForSell && volumeOK;
    
    // === Chart Display ===
    string trendStr = h1Uptrend ? "UPTREND" : (h1Downtrend ? "DOWNTREND" : "FLAT");
@@ -857,11 +1166,13 @@ void AnalyzeAndTrade(const double &ema34[], const double &atrBuf[],
       "Daily trades: %d/%d\n"
       "---------------------------\n"
       "H1 Trend: %s (EMA%d=%s vs EMA%d=%s)\n"
+      "H1 ADX: %s | EMA Spread: %s | TrendStrength: %s\n"
       "M15 EMA%d: %s\n"
-      "M15 ATR: %s | Zone: +/-%s\n"
+      "M15 ATR: %s | Zone: +/-%s | dEMA: %s\n"
       "---------------------------\n"
       "Bar[1]: O=%s H=%s L=%s C=%s\n"
       "Pullback: %s | Bounce: %s | Volume: %s\n"
+      "CandleQ: body/range=%s | nearExtreme=%s\n"
       "Vol: %s / min=%s max=%s\n"
       "---------------------------\n"
       "Signal: %s\n"
@@ -871,13 +1182,16 @@ void AnalyzeAndTrade(const double &ema34[], const double &atrBuf[],
       g_dailyTradeCount, InpMaxTradesPerDay,
       trendStr, InpEMA_H1_Fast, DoubleToString(h1Fast[0], _Digits),
       InpEMA_H1_Slow, DoubleToString(h1Slow[0], _Digits),
+      DoubleToString(h1AdxVal, 1), DoubleToString(h1EmaSpread, _Digits), (trendStrengthOK ? "OK" : "WEAK"),
       InpEMA_M15, DoubleToString(m15Ema, _Digits),
-      DoubleToString(atr, _Digits), DoubleToString(pullbackZone, _Digits),
+      DoubleToString(atr, _Digits), DoubleToString(pullbackZone, _Digits), DoubleToString(emaSlope, _Digits),
       DoubleToString(barOpen, _Digits), DoubleToString(barHigh, _Digits),
       DoubleToString(barLow, _Digits), DoubleToString(barClose, _Digits),
       ((pullbackForBuy || pullbackForSell) ? "YES" : "NO"),
       ((bounceForBuy || bounceForSell) ? "YES" : "NO"),
       volStatus,
+      validRange ? DoubleToString(body / barRange, 2) : "0.00",
+      (closeNearHigh || closeNearLow) ? "YES" : "NO",
       DoubleToString(currentVolume, 0),
       DoubleToString(avgVolume * InpVolumeMultiplier, 0),
       volMaxStr,
@@ -892,13 +1206,24 @@ void AnalyzeAndTrade(const double &ema34[], const double &atrBuf[],
       PrintLog("--- BAR ANALYSIS ---");
       PrintLog("  H1: " + trendStr + " (EMA" + IntegerToString(InpEMA_H1_Fast) + "=" + DoubleToString(h1Fast[0], _Digits)
             + " vs EMA" + IntegerToString(InpEMA_H1_Slow) + "=" + DoubleToString(h1Slow[0], _Digits) + ")");
+      PrintLog("  H1 Strength: ADX=" + DoubleToString(h1AdxVal, 1)
+         + " | EMA spread=" + DoubleToString(h1EmaSpread, _Digits)
+         + " | Need ADX>=" + DoubleToString(InpMinH1ADX, 1)
+         + " and spread>=ATR*" + DoubleToString(InpMinH1EMASpreadATR, 2)
+         + " => " + (trendStrengthOK ? "OK" : "WEAK"));
       PrintLog("  M15 EMA" + IntegerToString(InpEMA_M15) + ": " + DoubleToString(m15Ema, _Digits)
             + " | ATR: " + DoubleToString(atr, _Digits)
-            + " | Zone: +/-" + DoubleToString(pullbackZone, _Digits));
+         + " | Zone: +/-" + DoubleToString(pullbackZone, _Digits)
+         + " | dEMA: " + DoubleToString(emaSlope, _Digits)
+         + " | SlopeOK(B/S): " + (slopeBuyOK ? "Y" : "N") + "/" + (slopeSellOK ? "Y" : "N"));
       PrintLog("  Bar[1]: O=" + DoubleToString(barOpen, _Digits)
             + " H=" + DoubleToString(barHigh, _Digits)
             + " L=" + DoubleToString(barLow, _Digits)
             + " C=" + DoubleToString(barClose, _Digits));
+      if(validRange)
+         PrintLog("  Candle quality: body/range=" + DoubleToString(body / barRange, 2)
+            + " | nearHigh=" + (closeNearHigh ? "Y" : "N")
+            + " | nearLow=" + (closeNearLow ? "Y" : "N"));
       
       PrintLog("  Volume: " + (volumeOK ? "OK" : (volumeTooHigh ? "SPIKE-BLOCKED (news/climax)" : "LOW"))
             + " (current=" + DoubleToString(currentVolume, 0)
@@ -944,6 +1269,8 @@ void AnalyzeAndTrade(const double &ema34[], const double &atrBuf[],
       else if(h1Uptrend)
       {
          if(!InpAllowBuy) evalReason = "BUY_disabled";
+         else if(!trendStrengthOK) evalReason = "trend_strength_weak";
+         else if(!slopeBuyOK) evalReason = "ema_slope_weak";
          else if(!pullbackForBuy) evalReason = "no_pullback_to_EMA";
          else if(!bounceForBuy) evalReason = "no_bullish_bounce";
          else if(!volumeOK) evalReason = volumeTooHigh ? "volume_SPIKE" : "volume_LOW";
@@ -952,6 +1279,8 @@ void AnalyzeAndTrade(const double &ema34[], const double &atrBuf[],
       else // h1Downtrend
       {
          if(!InpAllowSell) evalReason = "SELL_disabled";
+         else if(!trendStrengthOK) evalReason = "trend_strength_weak";
+         else if(!slopeSellOK) evalReason = "ema_slope_weak";
          else if(!pullbackForSell) evalReason = "no_pullback_to_EMA";
          else if(!bounceForSell) evalReason = "no_bearish_bounce";
          else if(!volumeOK) evalReason = volumeTooHigh ? "volume_SPIKE" : "volume_LOW";
@@ -973,11 +1302,23 @@ void AnalyzeAndTrade(const double &ema34[], const double &atrBuf[],
    // === Execute Trade ===
    if(buySignal)
    {
+      if(IsUSDBiasCapHit(true))
+      {
+         if(InpEnableDetailedLogs)
+            PrintLog("BLOCKED: USD bias cap hit for BUY on " + _Symbol + " (max " + IntegerToString(InpMaxUSDBiasPositions) + ")");
+         return;
+      }
       PrintLog(">>> BUY SIGNAL: H1 Uptrend + M15 pullback to EMA" + IntegerToString(InpEMA_M15) + " + bullish bounce + volume OK");
       OpenPosition(true, InpFixedSLPips, InpFixedTPPips, "v5_Pullback_BUY", currentATR);
    }
    else if(sellSignal)
    {
+      if(IsUSDBiasCapHit(false))
+      {
+         if(InpEnableDetailedLogs)
+            PrintLog("BLOCKED: USD bias cap hit for SELL on " + _Symbol + " (max " + IntegerToString(InpMaxUSDBiasPositions) + ")");
+         return;
+      }
       PrintLog(">>> SELL SIGNAL: H1 Downtrend + M15 pullback to EMA" + IntegerToString(InpEMA_M15) + " + bearish bounce + volume OK");
       OpenPosition(false, InpFixedSLPips, InpFixedTPPips, "v5_Pullback_SELL", currentATR);
    }
@@ -1455,25 +1796,49 @@ void ManageOpenPositions()
          }
       }
       // === BREAKEVEN (Priority 2) ===
+      // Locks in InpBreakevenLockPips of profit instead of plain entry (prevents "$0 giveback" pattern)
       else if(InpBreakevenPips > 0 && profitPips >= InpBreakevenPips)
       {
-         if(posType == POSITION_TYPE_BUY && currentSL < openPrice)
+         double lockDistance = (InpBreakevenLockPips > 0 ? InpBreakevenLockPips : 0) * pipValue;
+         
+         if(posType == POSITION_TYPE_BUY)
          {
-            newSL = NormalizeDouble(openPrice, digits);
-            needsUpdate = true;
-            updateReason = "BREAKEVEN";
+            double targetSL = openPrice + lockDistance;
+            // Only move SL up (never down) and only if BE-zone SL is better than current
+            if(targetSL > currentSL && targetSL < currentPrice)
+            {
+               newSL = NormalizeDouble(targetSL, digits);
+               needsUpdate = true;
+               updateReason = (InpBreakevenLockPips > 0)
+                  ? StringFormat("BREAKEVEN+LOCK%dp", InpBreakevenLockPips)
+                  : "BREAKEVEN";
+            }
          }
-         else if(posType == POSITION_TYPE_SELL && currentSL > openPrice)
+         else if(posType == POSITION_TYPE_SELL)
          {
-            newSL = NormalizeDouble(openPrice, digits);
-            needsUpdate = true;
-            updateReason = "BREAKEVEN";
+            double targetSL = openPrice - lockDistance;
+            if((targetSL < currentSL || currentSL == 0) && targetSL > currentPrice)
+            {
+               newSL = NormalizeDouble(targetSL, digits);
+               needsUpdate = true;
+               updateReason = (InpBreakevenLockPips > 0)
+                  ? StringFormat("BREAKEVEN+LOCK%dp", InpBreakevenLockPips)
+                  : "BREAKEVEN";
+            }
          }
       }
       
       // Execute modification
       if(needsUpdate)
       {
+         double slDeltaPips = MathAbs(newSL - currentSL) / pipValue;
+         if(currentSL > 0 && slDeltaPips < InpMinSLUpdatePips)
+            continue;
+
+         datetime lastSLUpdateTime = GetLastSLUpdateTime(ticket);
+         if(lastSLUpdateTime > 0 && (TimeCurrent() - lastSLUpdateTime) < InpMinSecondsBetweenSLUpdates)
+            continue;
+
          bool validSL = false;
          if(posType == POSITION_TYPE_BUY && newSL < currentPrice && newSL > currentSL)
             validSL = true;
@@ -1492,6 +1857,7 @@ void ManageOpenPositions()
             
             if(trade.PositionModify(ticket, newSL, currentTP))
             {
+               SetLastSLUpdateTime(ticket, TimeCurrent());
                _WriteLogLine(updateReason + ": #" + IntegerToString((long)ticket)
                              + " | Profit: " + DoubleToString(profitPips, 1) + " pips"
                              + " | SL: " + DoubleToString(currentSL, digits)
