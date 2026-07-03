@@ -48,11 +48,12 @@ input double InpEntry2Lot         = 0.02;
 input double InpEntry3Lot         = 0.03;
 
 input group "=== SL/TP: Session-based (GMT+7) ==="
-input double InpSLMorning          = 20.0;   // SL pips (7h-13h)
-input double InpTPMorning          = 40.0;   // TP pips (7h-13h)
+input double InpSLMorning          = 30.0;   // SL pips (7h-13h)
+input double InpTPMorning          = 90.0;   // TP pips (7h-13h)
 input double InpSLAfternoon        = 30.0;   // SL pips (13h-7h)
 input double InpTPAfternoon        = 90.0;   // TP pips (13h-7h)
 input double InpEntryBufferPips    = 60.0;   // Entry buffer from midPrice (pips)
+input double InpEntryBufferPipsNight = 60.0;   // Entry buffer from midPrice (pips)
 input bool   InpUseSmartEntry      = true;   // Use recent low/high for smarter entry
 input int    InpSmartEntryBars     = 4;      // Bars to look back for smart entry (1-6)
 
@@ -70,12 +71,13 @@ input int    InpMaxTradeMinutes   = 120;
 
 input group "=== Symbol & Session ==="
 input bool   InpTradeXAUUSD       = true;
-input int    InpDisabledStartHour  = 2;
-input int    InpDisabledEndHour    = 6;
+input int    InpDisabledStartHour  = -1;
+input int    InpDisabledEndHour    = -1;  // disabled (duplicate with news window 2)
+input int    InpFridayBlockHour    = 0;    // Block Friday all day (GMT+7), 24=disabled
 input int    InpNewsStart1Mins     = 720;    // News window 1 start (UTC minutes, 720=12:00)
 input int    InpNewsEnd1Mins       = 870;    // News window 1 end   (UTC minutes, 870=14:30)
 input int    InpNewsStart2Mins     = 1080;   // News window 2 start (UTC minutes, 1080=18:00)
-input int    InpNewsEnd2Mins       = 100;    // News window 2 end   (UTC minutes, 100=01:40, overnight if < start)
+input int    InpNewsEnd2Mins       = 120;    // News window 2 end   (UTC minutes, 120=02:00, overnight if < start)
 input int    InpMagicNumber       = 567890;
 
 input group "=== Debug ==="
@@ -230,6 +232,13 @@ bool CheckTradingConditions()
       MqlDateTime dt; TimeToStruct(TimeGMT()+7*3600, dt); int h = dt.hour;
       bool blocked = (InpDisabledStartHour < InpDisabledEndHour) ? (h >= InpDisabledStartHour && h < InpDisabledEndHour) : (h >= InpDisabledStartHour || h < InpDisabledEndHour);
       if(blocked) { PrintLog("BLOCKED: Disabled hours"); return false; }
+   }
+   // Friday afternoon block (GMT+7)
+   if(InpFridayBlockHour >= 0 && InpFridayBlockHour < 24) {
+      MqlDateTime dt; TimeToStruct(TimeGMT()+7*3600, dt);
+      if(dt.day_of_week == 5 && dt.hour >= InpFridayBlockHour) {
+         PrintLog("BLOCKED: Friday after " + IntegerToString(InpFridayBlockHour) + "h"); return false;
+      }
    }
    // News windows (UTC, minutes from midnight; if end < start = overnight)
    {  MqlDateTime dt; TimeToStruct(TimeGMT(), dt); int totalMin = dt.hour*60+dt.min;
@@ -525,7 +534,11 @@ void OpenStack(bool isBuy, double midPrice, const double &highs[], const double 
    price = NormalizeDouble(price, digits);
 
    midPrice = NormalizeDouble(midPrice, digits);
-   double entryTarget = isBuy ? NormalizeDouble(midPrice - InpEntryBufferPips*pipVal, digits) : NormalizeDouble(midPrice + InpEntryBufferPips*pipVal, digits);
+
+   // Session-based buffer
+   MqlDateTime dt; TimeToStruct(TimeGMT()+7*3600, dt);
+   double bufPips = (dt.hour >= 7 && dt.hour < 13) ? InpEntryBufferPips : InpEntryBufferPipsNight;
+   double entryTarget = isBuy ? NormalizeDouble(midPrice - bufPips*pipVal, digits) : NormalizeDouble(midPrice + bufPips*pipVal, digits);
 
    // Smart entry: use recent low/high to place limit near natural support/resistance
    if(InpUseSmartEntry)
@@ -556,7 +569,6 @@ void OpenStack(bool isBuy, double midPrice, const double &highs[], const double 
    double entry1Price = useLimit ? entryTarget : price;
    string entryType = useLimit ? "LIMIT" : "MARKET";
 
-   MqlDateTime dt; TimeToStruct(TimeGMT()+7*3600, dt);
    double slPips = (dt.hour >= 7 && dt.hour < 13) ? InpSLMorning : InpSLAfternoon;
    double tpPips = (dt.hour >= 7 && dt.hour < 13) ? InpTPMorning : InpTPAfternoon;
    double slDist = slPips*pipVal, tpDist = tpPips*pipVal;
