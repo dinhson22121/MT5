@@ -40,7 +40,7 @@ input group "=== Strategy: DEMA/SMA on M20 ==="
 input int    InpDEMAPeriod        = 9;
 input int    InpSMAPeriod         = 16;
 input double InpSpreadMultiplier  = 1.6;
-input double InpSpreadMultiplierB = 0;    // Path B: relaxed multiplier (DEMA trend confirmed)
+input double InpSpreadMultiplierB = 1.4;    // Path B: relaxed multiplier (DEMA trend confirmed)
 
 input group "=== Entry: Stack Scaling ==="
 input double InpEntry1Lot         = 0.01;
@@ -51,8 +51,10 @@ input group "=== SL/TP: Session-based (GMT+7) ==="
 input double InpSLMorning          = 20.0;   // SL pips (7h-13h)
 input double InpTPMorning          = 40.0;   // TP pips (7h-13h)
 input double InpSLAfternoon        = 30.0;   // SL pips (13h-7h)
-input double InpTPAfternoon        = 80.0;   // TP pips (13h-7h)
-input double InpEntryBufferPips    = 50.0;   // Entry buffer from midPrice (pips)
+input double InpTPAfternoon        = 90.0;   // TP pips (13h-7h)
+input double InpEntryBufferPips    = 60.0;   // Entry buffer from midPrice (pips)
+input bool   InpUseSmartEntry      = true;   // Use recent low/high for smarter entry
+input int    InpSmartEntryBars     = 4;      // Bars to look back for smart entry (1-6)
 
 input group "=== State: Market Sensitivity ==="
 input bool   InpAutoState         = true;
@@ -73,7 +75,7 @@ input int    InpDisabledEndHour    = 6;
 input int    InpNewsStart1Mins     = 720;    // News window 1 start (UTC minutes, 720=12:00)
 input int    InpNewsEnd1Mins       = 870;    // News window 1 end   (UTC minutes, 870=14:30)
 input int    InpNewsStart2Mins     = 1080;   // News window 2 start (UTC minutes, 1080=18:00)
-input int    InpNewsEnd2Mins       = 90;     // News window 2 end   (UTC minutes, 90=01:30, overnight if < start)
+input int    InpNewsEnd2Mins       = 100;    // News window 2 end   (UTC minutes, 100=01:40, overnight if < start)
 input int    InpMagicNumber       = 567890;
 
 input group "=== Debug ==="
@@ -490,14 +492,32 @@ void OnTick()
       if(InpEnableDetailedLogs) PrintLog("  SELL (path B): DEMA falling, spread "+DoubleToString(MathAbs(d1)/MathAbs(d4),2)+"x ≥ "+DoubleToString(InpSpreadMultiplierB,1)+"x OK");
    }
 
-   if(buySignal) { PrintLog(">>> BUY | Mid="+DoubleToString(midPrice,_Digits)); OpenStack(true, midPrice); }
-   else if(sellSignal) { PrintLog(">>> SELL | Mid="+DoubleToString(midPrice,_Digits)); OpenStack(false, midPrice); }
+   if(!buySignal && !sellSignal && InpEnableDetailedLogs)
+   {
+      string reason = "";
+      if(is_high) {
+         if(d4 <= 0) reason = "d4≤0 (not all positive)";
+         else if(!(d1>d2 && d2>d3 && d3>d4)) reason = "ordering fail ("+DoubleToString(d1,2)+">"+DoubleToString(d2,2)+">"+DoubleToString(d3,2)+">"+DoubleToString(d4,2)+")";
+         else if(d1/d4 < InpSpreadMultiplier) reason = DoubleToString(d1/d4,2)+"x < "+DoubleToString(InpSpreadMultiplier,1)+"x";
+         else reason = "path B: DEMA not rising";
+      }
+      else if(is_low) {
+         if(d4 >= 0) reason = "d4≥0 (not all negative)";
+         else if(!(d1<d2 && d2<d3 && d3<d4)) reason = "ordering fail ("+DoubleToString(d1,2)+"<"+DoubleToString(d2,2)+"<"+DoubleToString(d3,2)+"<"+DoubleToString(d4,2)+")";
+         else if(MathAbs(d1)/MathAbs(d4) < InpSpreadMultiplier) reason = DoubleToString(MathAbs(d1)/MathAbs(d4),2)+"x < "+DoubleToString(InpSpreadMultiplier,1)+"x";
+         else reason = "path B: DEMA not falling";
+      }
+      PrintLog("  NO SIGNAL: " + reason);
+   }
+
+   if(buySignal) { PrintLog(">>> BUY | Mid="+DoubleToString(midPrice,_Digits)); OpenStack(true, midPrice, highs, lows); }
+   else if(sellSignal) { PrintLog(">>> SELL | Mid="+DoubleToString(midPrice,_Digits)); OpenStack(false, midPrice, highs, lows); }
 }
 
 //+------------------------------------------------------------------+
 //| Open Stack                                                        |
 //+------------------------------------------------------------------+
-void OpenStack(bool isBuy, double midPrice)
+void OpenStack(bool isBuy, double midPrice, const double &highs[], const double &lows[])
 {
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT), pipVal = GetPipValue();
@@ -506,6 +526,32 @@ void OpenStack(bool isBuy, double midPrice)
 
    midPrice = NormalizeDouble(midPrice, digits);
    double entryTarget = isBuy ? NormalizeDouble(midPrice - InpEntryBufferPips*pipVal, digits) : NormalizeDouble(midPrice + InpEntryBufferPips*pipVal, digits);
+
+   // Smart entry: use recent low/high to place limit near natural support/resistance
+   if(InpUseSmartEntry)
+   {
+      int lookback = MathMin(InpSmartEntryBars, MathMin(ArraySize(highs), ArraySize(lows)) - 1);
+      if(lookback >= 2)
+      {
+         if(isBuy)
+         {
+            double minLow = lows[1];
+            for(int i = 2; i <= lookback; i++)
+               if(lows[i] < minLow) minLow = lows[i];
+            // Entry at the higher of: midPrice-buffer vs recent low
+            entryTarget = MathMax(entryTarget, NormalizeDouble(minLow, digits));
+         }
+         else
+         {
+            double maxHigh = highs[1];
+            for(int i = 2; i <= lookback; i++)
+               if(highs[i] > maxHigh) maxHigh = highs[i];
+            // Entry at the lower of: midPrice+buffer vs recent high
+            entryTarget = MathMin(entryTarget, NormalizeDouble(maxHigh, digits));
+         }
+      }
+   }
+
    bool useLimit = (isBuy && entryTarget < price) || (!isBuy && entryTarget > price);
    double entry1Price = useLimit ? entryTarget : price;
    string entryType = useLimit ? "LIMIT" : "MARKET";
