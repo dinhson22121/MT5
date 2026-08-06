@@ -1,2 +1,5 @@
 # Logs folder
 Logs/
+
+# MT5 Experts tab exports (e.g. 20260805.log)
+*.log
