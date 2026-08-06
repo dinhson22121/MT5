@@ -1,7 +1,24 @@
 //+------------------------------------------------------------------+
 //|                                    ea_multi_tf_momentum_v1.mq5   |
 //|                                    Copyright 2026                  |
-//|  v1.3 - Multi-Timeframe Momentum Strategy                        |
+//|  v1.4 - Multi-Timeframe Momentum Strategy                        |
+//|        Phase-8 (Aug 2026) — THROUGHPUT FIX from 2026-08-05 log:  |
+//|         Portfolio cap 3/3 blocked 87% of bars the whole day —    |
+//|         zombie positions sat near 0R for >24h holding all slots; |
+//|         only 1 trade executed all day. Fixes:                    |
+//|         1. Time-stop: close positions still < 0.5R after 6h      |
+//|         2. RSI re-cross through 50 invalidation exit (unproven   |
+//|            positions only, profit < 0.5R)                        |
+//|         3. Entry skipped when SL floor > 2x ATR-SL (GBPAUD had   |
+//|            ATR 6.4 pips floored to 35 => TP at 12xATR, never hit)|
+//|         4. Post-SL same-direction cooldown 6h (revenge re-entry) |
+//|         5. Volume min 1.2x->0.9x avg. NOTE: 08-05 replay showed  |
+//|            volume was never the deciding blocker (0 of 71 bars); |
+//|            unverified change, toggle off if backtest disagrees.  |
+//|         6. GBPAUD added to symbol filter (cross pair — note: NOT |
+//|            covered by USD-bias cap, has no USD leg)              |
+//|         7. Optional R-based BE/trailing (fixed-pip thresholds vs |
+//|            ATR SL gave 0.3R BE on XAU but 1.3R BE on AUDUSD)     |
 //|        Phase-7 analysis (Jun 2026) — RAISE WIN RATE, keep all syms|
 //|         Win/loss study of 25 live trades found 3 loss drivers:    |
 //|         1. ADX < 24 => 0 wins, 4 full SL + 3 BE. Min ADX 18->24.  |
@@ -46,7 +63,7 @@
 //|  - SL modify throttle reduces broker server load                 |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
-#property version   "1.30"
+#property version   "1.40"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -88,10 +105,11 @@ input bool   InpTradeGBPUSD    = true;         // GBPUSDc — kept; needs ADX>=2
 input bool   InpTradeEURUSD    = true;         // EURUSDc — kept
 input bool   InpTradeXAUUSD    = true;         // XAUUSDc — kept; volatile, ATR filters help
 input bool   InpTradeBTCUSD    = true;         // BTCUSDc — kept; anti-chase targets the all-SELL churn
+input bool   InpTradeGBPAUD    = true;         // GBPAUDc — v1.4: cross pair (no USD leg — outside USD-bias cap)
 
 input group "=== Volume Filter ==="
 input bool   InpUseVolumeFilter      = true;   // Enable volume filter
-input double InpVolumeMultiplier     = 1.2;    // Min: volume > avg × this
+input double InpVolumeMultiplier     = 0.9;    // Min: volume > avg × this. v1.4: 1.2->0.9 (08-05 log: 64% eval bars blocked LOW)
 input double InpVolumeMaxMultiplier  = 3.0;    // Max: block news spikes (0=no cap)
 input int    InpVolumePeriod         = 20;     // Average volume lookback period
 
@@ -105,6 +123,7 @@ input int    InpATRSLMinPipsJPY      = 30;     // Min SL for JPY pairs
 input int    InpATRSLMinPipsXAU      = 80;     // Min SL for Gold
 input int    InpATRSLMinPipsBTC      = 30;     // Min SL for BTC
 input int    InpATRSLMaxPips         = 200;    // Max SL pips (cap, for XAU/volatile)
+input double InpMaxFloorATRRatio     = 2.0;    // v1.4: skip entry if SL floor > ATR-SL × this — market too quiet (0=off)
 input int    InpFixedSLPips          = 50;     // Fallback SL (no ATR)
 input int    InpFixedTPPips          = 110;    // Fallback TP (no ATR)
 
@@ -128,6 +147,17 @@ input int    InpTrailingMinDistance  = 40;     // Min trailing distance in pips
 input int    InpTrailingMinActivate  = 60;     // Min profit pips to start trailing
 input int    InpMinSLUpdatePips      = 6;      // Min SL improvement before sending modify
 input int    InpMinSecondsBetweenSLUpdates = 30; // Min seconds between SL updates per ticket
+input bool   InpUseRBasedManagement  = true;   // v1.4: BE/trail thresholds in R (× actual SL distance) instead of fixed pips
+input double InpBreakevenAtR         = 1.0;    // v1.4: activate BE at profit = this × SL distance
+input double InpBreakevenLockR       = 0.25;   // v1.4: lock this × SL distance at BE (0.25R ≈ v1.3's +10 pips on a 35-pip SL; must clear spread)
+input double InpTrailingActivateR    = 1.5;    // v1.4: start trailing at profit = this × SL distance
+
+input group "=== Time-Stop & Post-SL (v1.4) ==="
+input bool   InpUseTimeStop          = true;   // Close stale positions (momentum thesis expired)
+input int    InpTimeStopBars         = 24;     // M15 bars before time-stop (24 = 6h)
+input double InpTimeStopMinR         = 0.5;    // Position survives only if profit >= this × SL distance
+input bool   InpUseRSIInvalidation   = true;   // Close unproven position when RSI crosses back through 50 against it
+input int    InpPostSLCooldownSeconds = 21600; // Block same-direction re-entry after SL close (6h, 0=off)
 
 input group "=== Portfolio Risk Control ==="
 input double InpMaxDailyLossPercent  = 6.0;   // Daily loss circuit breaker (0=disabled). v1.1: 4.0->6.0 (allow 4 SL @ default risk)
@@ -196,6 +226,15 @@ int g_handleATR_M15;
 ulong g_trackedTickets[];
 int   g_trackedCount = 0;
 
+// v1.4: per-ticket original SL distance (pips) for R-based management
+ulong  g_riskTickets[];
+double g_riskDistPips[];
+int    g_riskCount = 0;
+
+// v1.4: post-SL directional cooldown
+datetime g_lastSLCloseTime = 0;
+bool     g_lastSLWasBuy    = false;
+
 //+------------------------------------------------------------------+
 //| Utility: Symbol & Account                                         |
 //+------------------------------------------------------------------+
@@ -222,6 +261,7 @@ bool IsSymbolEnabledByInput()
    if(StringFind(s, "EURUSD") >= 0) return InpTradeEURUSD;
    if(StringFind(s, "XAU") >= 0 || StringFind(s, "GOLD") >= 0) return InpTradeXAUUSD;
    if(StringFind(s, "BTC") >= 0) return InpTradeBTCUSD;
+   if(StringFind(s, "GBPAUD") >= 0) return InpTradeGBPAUD;
    return false; // Unknown symbols blocked when filter is on
 }
 
@@ -238,6 +278,7 @@ int CountEnabledSymbols()
    if(InpTradeEURUSD) count++;
    if(InpTradeXAUUSD) count++;
    if(InpTradeBTCUSD) count++;
+   if(InpTradeGBPAUD) count++;
 
    if(count <= 0)
       count = 1;
@@ -446,6 +487,35 @@ void SetLastSLUpdateTime(ulong ticket, datetime updateTime)
 }
 
 //+------------------------------------------------------------------+
+//| v1.4: Per-ticket SL distance (R unit) + post-SL cooldown          |
+//+------------------------------------------------------------------+
+void RecordRiskDistance(ulong ticket, double distPips)
+{
+   int newSize = g_riskCount + 1;
+   ArrayResize(g_riskTickets, newSize);
+   ArrayResize(g_riskDistPips, newSize);
+   g_riskTickets[g_riskCount]  = ticket;
+   g_riskDistPips[g_riskCount] = distPips;
+   g_riskCount = newSize;
+}
+
+// Returns the SL distance (pips) recorded at open; falls back to the
+// ATR-based SL the EA would use now (covers EA restarts / legacy tickets).
+double GetRiskDistancePips(ulong ticket, double currentATR)
+{
+   for(int i = 0; i < g_riskCount; i++)
+      if(g_riskTickets[i] == ticket) return g_riskDistPips[i];
+   return (double)GetATRBasedSLPips(currentATR);
+}
+
+bool IsPostSLCooldownActive(bool isBuy)
+{
+   if(InpPostSLCooldownSeconds <= 0 || g_lastSLCloseTime == 0) return false;
+   if(g_lastSLWasBuy != isBuy) return false;
+   return ((int)(TimeCurrent() - g_lastSLCloseTime) < InpPostSLCooldownSeconds);
+}
+
+//+------------------------------------------------------------------+
 //| File Logging                                                      |
 //+------------------------------------------------------------------+
 string _GetDailyLogFileName(string suffix)
@@ -567,6 +637,12 @@ void LogClosedPosition(ulong posTicket)
       ENUM_DEAL_TYPE   dType   = (ENUM_DEAL_TYPE)HistoryDealGetInteger(dealTicket, DEAL_TYPE);
 
       string exitReason = "UNKNOWN";
+      if(reason == DEAL_REASON_SL)
+      {
+         // v1.4: closing deal of a BUY position is a SELL deal
+         g_lastSLCloseTime = TimeCurrent();
+         g_lastSLWasBuy    = (dType == DEAL_TYPE_SELL);
+      }
       if(reason == DEAL_REASON_SL)      exitReason = "STOP_LOSS";
       else if(reason == DEAL_REASON_TP) exitReason = "TAKE_PROFIT";
       else if(reason == DEAL_REASON_SO) exitReason = "STOP_OUT";
@@ -641,7 +717,7 @@ int OnInit()
    // === Initialization Summary ===
    double bal = AccountInfoDouble(ACCOUNT_EQUITY);
    Print("══════════════════════════════════════════");
-   Print("  EA v1.3 — Multi-TF Momentum Strategy");
+   Print("  EA v1.4 — Multi-TF Momentum Strategy");
    Print("  Target: 10% / month | Max capital: $10,000");
    Print("══════════════════════════════════════════");
    Print("  Symbol: ", _Symbol, " | Pip: ", DoubleToString(pipVal, _Digits));
@@ -673,8 +749,19 @@ int OnInit()
          " other=", InpATRSLMinPips,
          "] | Max=", InpATRSLMaxPips);
    Print("  TP: SL×", InpATRTPRatio, " (R:R 1:", InpATRTPRatio, ")");
-   Print("  BE: +", InpBreakevenPips, " pips → lock +", InpBreakevenLockPips, " pips");
-   Print("  Trail: ATR×", InpTrailingATRMultiplier, " (min ", InpTrailingMinDistance, " pips, activate +", InpTrailingMinActivate, " pips)");
+   if(InpUseRBasedManagement)
+      Print("  BE/Trail (R-based): BE@", DoubleToString(InpBreakevenAtR, 2), "R lock ", DoubleToString(InpBreakevenLockR, 2),
+            "R | Trail activate@", DoubleToString(InpTrailingActivateR, 2), "R, dist ATR×", InpTrailingATRMultiplier,
+            " (min ", InpTrailingMinDistance, " pips)");
+   else
+   {
+      Print("  BE: +", InpBreakevenPips, " pips → lock +", InpBreakevenLockPips, " pips");
+      Print("  Trail: ATR×", InpTrailingATRMultiplier, " (min ", InpTrailingMinDistance, " pips, activate +", InpTrailingMinActivate, " pips)");
+   }
+   Print("  v1.4 Time-stop: ", InpUseTimeStop ? "ON" : "OFF", " (", InpTimeStopBars, " bars, survive if >= ",
+         DoubleToString(InpTimeStopMinR, 2), "R) | RSI-invalidation: ", InpUseRSIInvalidation ? "ON" : "OFF");
+   Print("  v1.4 Post-SL cooldown: ", InpPostSLCooldownSeconds / 3600, "h same-direction | Floor/ATR guard: ",
+         InpMaxFloorATRRatio > 0 ? "x" + DoubleToString(InpMaxFloorATRRatio, 1) : "OFF");
    Print("──────────────────────────────────────────");
    Print("  Daily loss breaker: ", InpMaxDailyLossPercent, "%");
    Print("  Weekly loss breaker: ", InpMaxWeeklyLossPercent, "%");
@@ -694,6 +781,7 @@ int OnInit()
       if(InpTradeEURUSD) allowed += "EUR ";
       if(InpTradeXAUUSD) allowed += "XAU ";
       if(InpTradeBTCUSD) allowed += "BTC ";
+      if(InpTradeGBPAUD) allowed += "GBPAUD ";
       Print("  Symbol filter: ON | Allowed: ", allowed, "| This chart (", _Symbol, "): ", IsSymbolEnabledByInput() ? "ENABLED" : "BLOCKED");
    }
    else
@@ -717,7 +805,7 @@ void OnDeinit(const int reason)
    IndicatorRelease(g_handleRSI_M15);
    IndicatorRelease(g_handleATR_M15);
    Comment("");
-   Print("EA v1.3 STOPPED. Reason: ", reason);
+   Print("EA v1.4 STOPPED. Reason: ", reason);
 }
 
 //+------------------------------------------------------------------+
@@ -1053,6 +1141,7 @@ void AnalyzeAndTrade(const double &h4Fast[], const double &h4Slow[],
    if(buySignal)
    {
       if(IsUSDBiasCapHit(true)) { PrintLog("BLOCKED: USD bias cap hit for BUY"); return; }
+      if(IsPostSLCooldownActive(true)) { PrintLog("BLOCKED: Post-SL cooldown — last SL was a BUY on this symbol"); return; }
       PrintLog(StringFormat(">>> BUY SIGNAL: H4 bull + H1 bull(ADX %.1f) + price>EMA(%.2fATR) + RSI50 cross(%.1f) + volume OK",
                h1Adx[0], emaDistATR, rsiNow));
       OpenPosition(true, InpFixedSLPips, InpFixedTPPips, "v1_MTF_BUY", currentATR);
@@ -1060,6 +1149,7 @@ void AnalyzeAndTrade(const double &h4Fast[], const double &h4Slow[],
    else if(sellSignal)
    {
       if(IsUSDBiasCapHit(false)) { PrintLog("BLOCKED: USD bias cap hit for SELL"); return; }
+      if(IsPostSLCooldownActive(false)) { PrintLog("BLOCKED: Post-SL cooldown — last SL was a SELL on this symbol"); return; }
       PrintLog(StringFormat(">>> SELL SIGNAL: H4 bear + H1 bear(ADX %.1f) + price<EMA(%.2fATR) + RSI50 cross(%.1f) + volume OK",
                h1Adx[0], emaDistATR, rsiNow));
       OpenPosition(false, InpFixedSLPips, InpFixedTPPips, "v1_MTF_SELL", currentATR);
@@ -1231,6 +1321,22 @@ void OpenPosition(bool isBuy, int slPips, int tpPips, string comment, double cur
    int effSL = slPips, effTP = tpPips;
    if(currentATR > 0)
    {
+      // v1.4: floor-distortion guard — GBPAUD 08-05 had ATR-SL 11.5 pips floored
+      // to 35, putting TP at 12xATR (unreachable). Skip when floor dominates ATR.
+      double pipValGuard = GetPipValue();
+      double rawATRPips  = (pipValGuard > 0) ? (currentATR * InpATRSLMultiplier) / pipValGuard : 0;
+      if(InpMaxFloorATRRatio > 0 && rawATRPips > 0)
+      {
+         int floorPips = GetMinSLPipsForSymbol();
+         if((double)floorPips > rawATRPips * InpMaxFloorATRRatio)
+         {
+            PrintLog(StringFormat("BLOCKED: SL floor %d pips > %.1fx ATR-SL %.1f pips — market too quiet for %s",
+                     floorPips, InpMaxFloorATRRatio, rawATRPips, _Symbol));
+            LogTradeCSV("CANCEL", comment, isBuy, 0, 0, 0, 0, -2, 0);
+            return;
+         }
+      }
+
       int atrSL = GetATRBasedSLPips(currentATR);
       if(atrSL > 0) { effSL = atrSL; effTP = GetATRBasedTPPips(atrSL); }
       if(InpEnableDetailedLogs)
@@ -1292,6 +1398,7 @@ void OpenPosition(bool isBuy, int slPips, int tpPips, string comment, double cur
       Print("SUCCESS: Ticket #", trade.ResultOrder());
       _WriteLogLine("SUCCESS: #" + IntegerToString((long)trade.ResultOrder()));
       LogTradeCSV("SUCCESS", comment, isBuy, price, sl, tp, lot, trade.ResultRetcode(), trade.ResultOrder());
+      RecordRiskDistance(trade.ResultOrder(), (double)effSL); // v1.4: R unit for management
       g_lastTradeTime = TimeCurrent();
       g_dailyTradeCount++;
    }
@@ -1315,6 +1422,19 @@ void ManageOpenPositions()
    double currentATR = hasATR ? atrBuf[0] : 0;
    double pipValue   = GetPipValue();
 
+   // v1.4: RSI (closed bar) for momentum-invalidation exit
+   double rsiBuf[];
+   ArraySetAsSeries(rsiBuf, true);
+   bool hasRSI = InpUseRSIInvalidation && (CopyBuffer(g_handleRSI_M15, 0, 0, 2, rsiBuf) >= 2);
+
+   // v1.4: evaluate exits on closed bars only. Trailing/BE stay per-tick, but a
+   // time-stop firing on any 5-second dip below the R threshold would cut trades
+   // that recover within the same bar.
+   static datetime lastExitCheckBar = 0;
+   datetime currentBar = iTime(_Symbol, PERIOD_M15, 0);
+   bool evaluateExits  = (currentBar != lastExitCheckBar);
+   lastExitCheckBar    = currentBar;
+
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
@@ -1337,13 +1457,62 @@ void ManageOpenPositions()
       double profitPips = isBuy ? (currentPrice - openPrice) / pipValue
                                 : (openPrice - currentPrice) / pipValue;
 
+      // --- v1.4: R unit for this position (pips of original SL distance) ---
+      double riskDistPips = GetRiskDistancePips(ticket, currentATR);
+      bool   rMode = (InpUseRBasedManagement && riskDistPips > 0);
+      double beActivatePips    = rMode ? riskDistPips * InpBreakevenAtR      : InpBreakevenPips;
+      double beLockPips        = rMode ? riskDistPips * InpBreakevenLockR    : InpBreakevenLockPips;
+      double trailActivatePips = rMode ? riskDistPips * InpTrailingActivateR : InpTrailingMinActivate;
+
+      // --- v1.4: Exit unproven positions (own magic only, profit < MinR) ---
+      // Zombie fix: 08-05 log showed 3 positions near 0R holding all portfolio
+      // slots for >24h, blocking 87% of bars from even evaluating signals.
+      // A position whose SL already sits in profit has proven itself — it costs
+      // a slot but can no longer lose, so leave it to BE/trailing.
+      bool slLockedInProfit = (currentSL > 0) && (isBuy ? (currentSL >= openPrice)
+                                                        : (currentSL <= openPrice));
+      if(evaluateExits && isOwn && !slLockedInProfit
+         && riskDistPips > 0 && profitPips < InpTimeStopMinR * riskDistPips)
+      {
+         if(InpUseTimeStop && InpTimeStopBars > 0)
+         {
+            int ageSeconds = (int)(TimeCurrent() - (datetime)PositionGetInteger(POSITION_TIME));
+            if(ageSeconds >= InpTimeStopBars * PeriodSeconds(PERIOD_M15))
+            {
+               if(trade.PositionClose(ticket))
+               {
+                  PrintLog(StringFormat("TIME-STOP: #%I64u closed after %d bars at %+.1f pips (< %.2fR of %.0f pips)",
+                           ticket, ageSeconds / PeriodSeconds(PERIOD_M15), profitPips, InpTimeStopMinR, riskDistPips));
+                  continue;
+               }
+               Print("  TIME-STOP CLOSE FAILED: #", ticket, " Error: ", trade.ResultRetcode());
+            }
+         }
+
+         if(hasRSI)
+         {
+            bool rsiAgainst = isBuy ? (rsiBuf[1] < 50.0 - InpRSI50Buffer)
+                                    : (rsiBuf[1] > 50.0 + InpRSI50Buffer);
+            if(rsiAgainst)
+            {
+               if(trade.PositionClose(ticket))
+               {
+                  PrintLog(StringFormat("RSI-INVALIDATION: #%I64u closed at %+.1f pips — RSI %.1f crossed back through 50 against %s",
+                           ticket, profitPips, rsiBuf[1], isBuy ? "BUY" : "SELL"));
+                  continue;
+               }
+               Print("  RSI-INVALIDATION CLOSE FAILED: #", ticket, " Error: ", trade.ResultRetcode());
+            }
+         }
+      }
+
       double newSL = currentSL;
 
       // --- Breakeven ---
-      if(InpBreakevenPips > 0 && profitPips >= InpBreakevenPips)
+      if(beActivatePips > 0 && profitPips >= beActivatePips)
       {
-         double beLevel = isBuy ? openPrice + InpBreakevenLockPips * pipValue
-                                : openPrice - InpBreakevenLockPips * pipValue;
+         double beLevel = isBuy ? openPrice + beLockPips * pipValue
+                                : openPrice - beLockPips * pipValue;
          beLevel = NormalizeDouble(beLevel, digits);
 
          bool needBE = isBuy  ? (currentSL < beLevel)
@@ -1352,7 +1521,7 @@ void ManageOpenPositions()
       }
 
       // --- Trailing Stop ---
-      if(InpUseTrailingStop && profitPips >= InpTrailingMinActivate)
+      if(InpUseTrailingStop && profitPips >= trailActivatePips)
       {
          double trailDist = 0;
          if(currentATR > 0 && pipValue > 0)
